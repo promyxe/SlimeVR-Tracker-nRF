@@ -530,6 +530,18 @@ config SENSOR_POLY_STEPS_PER_DEGREE
         For 0.5 C steps, enter 2.
         For 1.0 C steps, enter 1.
 
+config SENSOR_MAG_TEMP_COMPENSATION
+    bool "Magnetometer temperature compensation"
+    default y
+    help
+        Learn and compensate magnetometer offset drift over temperature
+        using the IMU temperature sensor as proxy (magnetometers like the
+        QMC6309 have none on-chip). The offset-vs-temperature table is
+        learned during rest phases with an undisturbed field and applied as
+        a relative correction, so fast thermal transitions (tracker warming
+        up during a session) are compensated open-loop instead of waiting
+        for the closed-loop hard-iron tracking to catch up.
+
 config SENSOR_USE_BOOT_CALIBRATION
     bool "Enable automatic boot calibration"
     default n

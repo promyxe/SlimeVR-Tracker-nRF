@@ -39,6 +39,10 @@
 #define MAIN_GYRO_TCAL_CORRECTION_ID 36
 #endif
 
+#if CONFIG_SENSOR_MAG_TEMP_COMPENSATION
+#define MAIN_MAG_TEMP_ID 40
+#endif
+
 void configure_sense_pins(void);
 
 uint8_t reboot_counter_read(void);

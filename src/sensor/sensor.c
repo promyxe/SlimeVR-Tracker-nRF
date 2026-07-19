@@ -35,6 +35,9 @@
 #if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
 #include "calibration/sens_auto.h"
 #endif
+#if IS_ENABLED(CONFIG_SENSOR_MAG_TEMP_COMPENSATION)
+#include "calibration/mag_temp.h"
+#endif
 #include "motion_state.h"
 #include "zephyr/logging/log.h"
 
@@ -2519,6 +2522,10 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 #if IS_ENABLED(CONFIG_SENSOR_MAG_HARD_IRON_TRACKING)
 				// Continuous hard-iron residual tracking on undisturbed samples
 				sensor_calibration_mag_bias_track_sample(frame->raw_m);
+#endif
+#if IS_ENABLED(CONFIG_SENSOR_MAG_TEMP_COMPENSATION)
+				// Learn mag offset vs temperature at rest (checked internally)
+				sensor_calibration_mag_temp_sample(frame->raw_m);
 #endif
 			}
 		}

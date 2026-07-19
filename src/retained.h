@@ -118,6 +118,16 @@ struct retained_data {
 		float doffset[3];          // Calculated D_offset (runtime only)
 		bool doffset_valid;        // D_offset is valid
 	} bootCalState;
+
+#if CONFIG_SENSOR_MAG_TEMP_COMPENSATION
+	// Magnetometer offset vs temperature table (calibrated space, 1°C buckets).
+	// Values are relative — only differences between bucket values are applied.
+	#define MAG_TEMP_COMP_BUCKETS (CONFIG_SENSOR_POLY_TEMP_MAX - CONFIG_SENSOR_POLY_TEMP_MIN)
+	struct {
+		float delta[MAG_TEMP_COMP_BUCKETS][3];
+		uint8_t weight[MAG_TEMP_COMP_BUCKETS]; // 0 = unset, else update count (capped)
+	} magTempComp;
+#endif
 #endif
 
 	/* CRC used to validate the retained data.  This must be

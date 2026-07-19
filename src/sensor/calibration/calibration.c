@@ -40,6 +40,9 @@
 #include "calibration.h"
 #include "mag_common.h"
 #include "magneto.h"
+#if IS_ENABLED(CONFIG_SENSOR_MAG_TEMP_COMPENSATION)
+#include "mag_temp.h"
+#endif
 #include "online_mag.h"
 #include "cal_imu.h"
 #if CONFIG_SENSOR_USE_SENS_CALIBRATION
@@ -186,12 +189,10 @@ void sensor_calibration_process_mag(float m[3])
 	//	for (int i = 0; i < 3; i++)
 	//		m[i] -= magBias[i];
 	sensor_sample_mag(m);
-	/* Snap under irq_lock so calibration_thread publish cannot tear the live matrix. */
-	float snap[4][3];
-	unsigned key = irq_lock();
-	memcpy(snap, magBAinv, sizeof(snap));
-	irq_unlock(key);
-	apply_BAinv(m, snap);
+	apply_BAinv(m, magBAinv);
+#if IS_ENABLED(CONFIG_SENSOR_MAG_TEMP_COMPENSATION)
+	sensor_calibration_mag_temp_apply(m);
+#endif
 }
 
 void sensor_calibration_update_sensor_ids(int imu)
@@ -371,6 +372,10 @@ void sensor_calibration_clear_mag(float m_inv[][3], bool write)
 		LOG_INF("Clearing stored calibration data");
 		sensor_calibration_online_mag_retained_clear();
 		sys_write(MAIN_MAG_BIAS_ID, &retained->magBAinv, m_inv, sizeof(magBAinv));
+#if IS_ENABLED(CONFIG_SENSOR_MAG_TEMP_COMPENSATION)
+		// Curve values live in calibrated space of the cleared calibration
+		sensor_calibration_mag_temp_clear();
+#endif
 		sensor_refresh_sensor_ids(); // Refresh reported mag status after clear
 	}
 }

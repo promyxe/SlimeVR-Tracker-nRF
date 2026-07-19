@@ -224,6 +224,9 @@ static int sys_retained_init(void)
 			}
 		}
 #endif
+#if CONFIG_SENSOR_MAG_TEMP_COMPENSATION
+		sys_read(MAIN_MAG_TEMP_ID, &retained->magTempComp, sizeof(retained->magTempComp));
+#endif
 		sys_read(RF_CHANNEL_ID, &retained->rf_channel, sizeof(retained->rf_channel));
 		sys_read(MAG_ENABLED_ID, &retained->mag_enabled, sizeof(retained->mag_enabled));
 		sys_read(
