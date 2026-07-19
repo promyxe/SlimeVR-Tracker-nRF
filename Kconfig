@@ -443,6 +443,17 @@ config VQF_BENCH
         storage. Keep this disabled for normal firmware builds to avoid the
         extra RAM cost from static benchmark buffers.
 
+config SENSOR_MAG_HARD_IRON_TRACKING
+    bool "Continuous magnetometer hard-iron tracking"
+    default y
+    help
+        Track the residual sphere center of calibrated magnetometer samples
+        with a lightweight recursive least-squares fit and fold small offset
+        corrections into the stored calibration continuously. Compensates
+        hard-iron drift (e.g. QMC6309 offset temperature drift) between full
+        ellipsoid calibration fits without resetting the fusion heading
+        reference. Soft iron is still handled by the full Magneto fits.
+
 config SENSOR_USE_6_SIDE_CALIBRATION
     bool "Use 6-side calibration"
     default y

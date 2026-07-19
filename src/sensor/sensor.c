@@ -29,7 +29,9 @@
 #include "util.h"
 #include "connection/connection.h"
 #include "calibration/calibration.h"
-#include "calibration/mag_common.h"
+#if IS_ENABLED(CONFIG_SENSOR_MAG_HARD_IRON_TRACKING)
+#include "calibration/mag_bias_track.h"
+#endif
 #include "motion_state.h"
 #include "zephyr/logging/log.h"
 
@@ -2494,6 +2496,10 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 				float cal_norm_sq = frame->raw_m[0] * frame->raw_m[0] + frame->raw_m[1] * frame->raw_m[1]
 								  + frame->raw_m[2] * frame->raw_m[2];
 				sensor_calibration_track_mag_norm(sqrtf(cal_norm_sq));
+#if IS_ENABLED(CONFIG_SENSOR_MAG_HARD_IRON_TRACKING)
+				// Continuous hard-iron residual tracking on undisturbed samples
+				sensor_calibration_mag_bias_track_sample(frame->raw_m);
+#endif
 			}
 		}
 		// Save mag data for debug output
