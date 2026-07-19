@@ -107,6 +107,34 @@
 #define MAG_SLEW_MAX_RATE_MOTION_DPS 8.0f
 #endif /* CONFIG_VQF_MAG_SLEW_LIMIT */
 
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+/* ---------- Gyro–mag direction consistency check ---------- */
+/*
+ * VQF's built-in disturbance detection compares only field NORM and DIP
+ * angle against the reference. A disturbance that rotates the field while
+ * roughly preserving norm and dip (common indoors: large steel structures,
+ * a nearby tracker's magnet) passes that gate and pulls heading directly.
+ *
+ * The Earth field is fixed in the world frame, so over a short window the
+ * measured field direction must rotate with the INVERSE of the sensor
+ * rotation. Each window the mag direction at window start is rotated by
+ * the conjugate of the (bias-corrected) gyro-integrated rotation and
+ * compared against the current measurement; a direction error beyond a
+ * rotation-scaled threshold marks the field as disturbed and heading
+ * corrections are rejected for a hold period.
+ *
+ * The threshold's relative term absorbs gyro scale/misalignment residuals
+ * and mag soft-iron residuals that grow with rotation magnitude. Windows
+ * with more than MAG_CONSIST_MAX_ROT of rotation are skipped because the
+ * quaternion angle folds beyond 180° and the threshold would be wrong.
+ */
+#define MAG_CONSIST_WINDOW_S 0.3f
+#define MAG_CONSIST_BASE_TH_RAD (3.0f * DEG_TO_RAD)
+#define MAG_CONSIST_REL_TH 0.10f
+#define MAG_CONSIST_HOLD_S 2.0f
+#define MAG_CONSIST_MAX_ROT_RAD (160.0f * DEG_TO_RAD)
+#endif /* CONFIG_VQF_MAG_GYRO_CONSISTENCY */
+
 static uint8_t imu_id;
 
 static vqf_params_t params;
@@ -156,6 +184,15 @@ static float current_tau_level = -1; /* current quantized level (-1 = unset) */
 static float smoothed_tau;           /* smoothed tauAcc for gradual transitions */
 #endif
 
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+/* Gyro–mag consistency state */
+static float consist_quat[4] = {1.0f, 0.0f, 0.0f, 0.0f}; /* sensor rotation since window start */
+static float consist_mag_ref[3];                         /* normalized mag direction at window start */
+static bool consist_have_ref;
+static float consist_window_t;
+static float consist_hold_t; /* remaining disturbance hold time */
+#endif
+
 /* Rest detection diagnostics */
 static uint32_t rest_enter_count;
 static uint32_t rest_exit_count;
@@ -173,6 +210,8 @@ static struct {
 } rest_event_log[REST_EVENT_LOG_SIZE];
 static uint8_t rest_event_idx;   /* next write position */
 static uint8_t rest_event_total; /* total events (up to log size) */
+
+static void vqf_consist_reset(void);
 
 void vqf_update_sensor_ids(int imu)
 {
@@ -227,6 +266,7 @@ void vqf_init(float g_time, float a_time, float m_time)
 	prev_rest_detected = false;
 	rest_event_idx = 0;
 	rest_event_total = 0;
+	vqf_consist_reset();
 }
 
 void vqf_load(const void *data)
@@ -252,6 +292,7 @@ void vqf_load(const void *data)
 	prev_rest_detected = false;
 	rest_event_idx = 0;
 	rest_event_total = 0;
+	vqf_consist_reset();
 }
 
 void vqf_save(void *data)
@@ -264,6 +305,127 @@ void vqf_save(void *data)
 	memcpy((uint8_t *)data + sizeof(state), &coeffs, sizeof(coeffs));
 }
 
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+static void vqf_consist_reset(void)
+{
+	consist_quat[0] = 1.0f;
+	consist_quat[1] = 0.0f;
+	consist_quat[2] = 0.0f;
+	consist_quat[3] = 0.0f;
+	consist_have_ref = false;
+	consist_window_t = 0.0f;
+	consist_hold_t = 0.0f;
+}
+
+/**
+ * @brief Accumulate the bias-corrected sensor rotation for the current window.
+ *
+ * Strapdown integration: consist_quat maps vectors from the current sensor
+ * frame to the sensor frame at window start.
+ */
+static void vqf_consist_integrate_gyro(const float g_rad[3], float dt)
+{
+	if (!consist_have_ref || dt <= 0.0f) {
+		return;
+	}
+
+	float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
+	float w_norm = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+	float angle = w_norm * dt;
+	if (angle < 1e-8f) {
+		return;
+	}
+
+	float half_angle = 0.5f * angle;
+	float s = sinf(half_angle) / w_norm;
+	float step[4] = {cosf(half_angle), s * w[0], s * w[1], s * w[2]};
+	float q_new[4];
+	q_multiply(consist_quat, step, q_new);
+	q_normalize(q_new, consist_quat);
+}
+
+/**
+ * @brief Per-mag-sample consistency evaluation.
+ *
+ * @param m calibrated mag sample (fusion input units)
+ * @param dt time step of this mag update in seconds
+ * @return true if the field is currently regarded as inconsistent (hold active)
+ */
+static bool vqf_consist_check_mag(const float m[3], float dt)
+{
+	if (consist_hold_t > 0.0f && dt > 0.0f) {
+		consist_hold_t -= dt;
+		if (consist_hold_t < 0.0f) {
+			consist_hold_t = 0.0f;
+		}
+	}
+
+	float m_norm_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+	if (m_norm_sq < 1e-12f) {
+		return consist_hold_t > 0.0f;
+	}
+	float inv_norm = 1.0f / sqrtf(m_norm_sq);
+	float m_dir[3] = {m[0] * inv_norm, m[1] * inv_norm, m[2] * inv_norm};
+
+	if (!consist_have_ref) {
+		memcpy(consist_mag_ref, m_dir, sizeof(consist_mag_ref));
+		consist_quat[0] = 1.0f;
+		consist_quat[1] = 0.0f;
+		consist_quat[2] = 0.0f;
+		consist_quat[3] = 0.0f;
+		consist_window_t = 0.0f;
+		consist_have_ref = true;
+		return consist_hold_t > 0.0f;
+	}
+
+	consist_window_t += dt;
+	if (consist_window_t < MAG_CONSIST_WINDOW_S) {
+		return consist_hold_t > 0.0f;
+	}
+
+	float cos_half = fabsf(consist_quat[0]);
+	if (cos_half > 1.0f) {
+		cos_half = 1.0f;
+	}
+	float rot_angle = 2.0f * acosf(cos_half);
+
+	if (rot_angle < MAG_CONSIST_MAX_ROT_RAD) {
+		// Predicted current measurement of the window-start field:
+		// rotate the start direction into the current sensor frame.
+		float q_inv[4];
+		q_conj(consist_quat, q_inv);
+		float m_pred[3];
+		v_rotate(consist_mag_ref, q_inv, m_pred);
+
+		float dot = m_pred[0] * m_dir[0] + m_pred[1] * m_dir[1] + m_pred[2] * m_dir[2];
+		if (dot > 1.0f) {
+			dot = 1.0f;
+		} else if (dot < -1.0f) {
+			dot = -1.0f;
+		}
+		float err = acosf(dot);
+		float threshold = MAG_CONSIST_BASE_TH_RAD + MAG_CONSIST_REL_TH * rot_angle;
+		if (err > threshold) {
+			consist_hold_t = MAG_CONSIST_HOLD_S;
+		}
+	}
+
+	// Start the next window from the current sample
+	memcpy(consist_mag_ref, m_dir, sizeof(consist_mag_ref));
+	consist_quat[0] = 1.0f;
+	consist_quat[1] = 0.0f;
+	consist_quat[2] = 0.0f;
+	consist_quat[3] = 0.0f;
+	consist_window_t = 0.0f;
+
+	return consist_hold_t > 0.0f;
+}
+#else
+static inline void vqf_consist_reset(void)
+{
+}
+#endif /* CONFIG_VQF_MAG_GYRO_CONSISTENCY */
+
 void vqf_update_gyro(float *g, float time)
 {
 	float g_rad[3] = {0};
@@ -271,16 +433,48 @@ void vqf_update_gyro(float *g, float time)
 	for (int i = 0; i < 3; i++) {
 		g_rad[i] = g[i] * DEG_TO_RAD;
 	}
-	/* Prefer caller dt so ODR changes / jitter do not stick to coeffs->gyrTs. */
-	if (time > 0.0f && time < 10.0f) {
-		uint64_t synth_ts = state.lastGyrTsUs + (uint64_t)(time * 1e6f);
-		if (synth_ts == 0) {
-			synth_ts = 1;
-		}
-		updateGyrTs(&params, &state, &coeffs, g_rad, synth_ts);
-	} else {
-		updateGyr(&params, &state, &coeffs, g_rad);
+	updateGyr(&params, &state, &coeffs, g_rad);
+	float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
+	float dt = coeffs.gyrTs;
+	for (int i = 0; i < 3; i++) {
+		grad_cls.omega_sum[i] += w[i] * dt;
 	}
+	grad_cls.omega_dt += dt;
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	vqf_consist_integrate_gyro(g_rad, dt);
+#endif
+}
+
+void vqf_update_gyro_ts(float *g, uint64_t timestamp_us)
+{
+	float g_rad[3] = {0};
+	for (int i = 0; i < 3; i++) {
+		g_rad[i] = g[i] * DEG_TO_RAD;
+	}
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	float dt = coeffs.gyrTs;
+	if (state.lastGyrTsUs != 0 && timestamp_us > state.lastGyrTsUs) {
+		uint64_t diff = timestamp_us - state.lastGyrTsUs;
+		if (diff > 0 && diff <= 10000000ULL) {
+			dt = (float)diff / 1e6f;
+		}
+	}
+#endif
+	updateGyrTs(&params, &state, &coeffs, g_rad, timestamp_us);
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+#else
+	float dt = coeffs.gyrTs;
+#endif
+	{
+		float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
+		for (int i = 0; i < 3; i++) {
+			grad_cls.omega_sum[i] += w[i] * dt;
+		}
+		grad_cls.omega_dt += dt;
+	}
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	vqf_consist_integrate_gyro(g_rad, dt);
+#endif
 }
 
 #if IS_ENABLED(CONFIG_VQF_ADAPTIVE_TAU_ACC)
@@ -455,14 +649,37 @@ static void vqf_apply_mag_slew_limit(float delta_before, float dt)
 }
 #endif /* CONFIG_VQF_MAG_SLEW_LIMIT */
 
-/* Post-update processing shared by both mag entry points. */
-static void vqf_post_mag_update(float delta_before, float dt)
+/* Pre/post-update processing shared by both mag entry points. */
+static void vqf_post_mag_update(float delta_before, float dt, bool consist_disturbed)
 {
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	if (consist_disturbed) {
+		// Field direction is inconsistent with the gyro-observed rotation:
+		// reject the heading correction the library just applied. The
+		// library's own norm/dip tracking and timers still ran normally.
+		state.delta = delta_before;
+		state.lastMagCorrAngularRate = 0.0f;
+		return;
+	}
+#else
+	ARG_UNUSED(consist_disturbed);
+#endif
 #if IS_ENABLED(CONFIG_VQF_MAG_SLEW_LIMIT)
 	vqf_apply_mag_slew_limit(delta_before, dt);
 #else
 	ARG_UNUSED(delta_before);
 	ARG_UNUSED(dt);
+#endif
+}
+
+static bool vqf_pre_mag_update(const float *m, float dt)
+{
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	return vqf_consist_check_mag(m, dt);
+#else
+	ARG_UNUSED(m);
+	ARG_UNUSED(dt);
+	return false;
 #endif
 }
 
@@ -478,22 +695,24 @@ void vqf_update_mag(float *m, float time)
 	// updateMagTs can derive the correct dt internally (avoids calling the static
 	// updateMag_internal directly).
 	if (time > 0.0f && time < 10.0f) {
+		bool consist_disturbed = vqf_pre_mag_update(m, time);
 		uint64_t synth_ts = state.lastMagTsUs + (uint64_t)(time * 1e6f);
 		if (synth_ts == 0) {
 			synth_ts = 1; // avoid the "uninitialized" sentinel value
 		}
 		updateMagTs(&params, &state, &coeffs, m, synth_ts);
-		vqf_post_mag_update(delta_before, time);
+		vqf_post_mag_update(delta_before, time, consist_disturbed);
 	} else {
+		bool consist_disturbed = vqf_pre_mag_update(m, coeffs.magTs);
 		updateMag(&params, &state, &coeffs, m);
-		vqf_post_mag_update(delta_before, coeffs.magTs);
+		vqf_post_mag_update(delta_before, coeffs.magTs, consist_disturbed);
 	}
 }
 
 void vqf_update_mag_ts(float *m, uint64_t timestamp_us)
 {
 	float delta_before = state.delta;
-	// Mirror the library's dt derivation so post-processing uses the same step.
+	// Mirror the library's dt derivation so pre/post-processing uses the same step.
 	float dt = coeffs.magTs;
 	if (state.lastMagTsUs != 0 && timestamp_us > state.lastMagTsUs) {
 		uint64_t diff = timestamp_us - state.lastMagTsUs;
@@ -501,8 +720,9 @@ void vqf_update_mag_ts(float *m, uint64_t timestamp_us)
 			dt = (float)diff / 1e6f;
 		}
 	}
+	bool consist_disturbed = vqf_pre_mag_update(m, dt);
 	updateMagTs(&params, &state, &coeffs, m, timestamp_us);
-	vqf_post_mag_update(delta_before, dt);
+	vqf_post_mag_update(delta_before, dt, consist_disturbed);
 }
 void vqf_update(float *g, float *a, float *m, float time)
 {
@@ -574,17 +794,24 @@ bool vqf_get_rest_detected(void)
 
 bool vqf_get_mag_dist_detected(void)
 {
-	return getMagDistDetected(&state);
+	bool dist = getMagDistDetected(&state);
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+	dist = dist || consist_hold_t > 0.0f;
+#endif
+	return dist;
 }
 
 void vqf_reset_mag_ref(void)
 {
 	setMagRef(&state, 0, 0);
+	// Calibration changed: window-start mag direction is no longer comparable
+	vqf_consist_reset();
 }
 
 void vqf_set_mag_ref(float norm, float dip)
 {
 	setMagRef(&state, norm, dip);
+	vqf_consist_reset();
 }
 
 float vqf_get_mag_ref_norm(void)
@@ -626,8 +853,8 @@ void vqf_get_debug_info(vqf_debug_info_t *info)
 	// Heading correction state
 	info->delta = getDelta(&state);
 
-	// Magnetic disturbance / reference
-	info->mag_dist_detected = getMagDistDetected(&state);
+	// Magnetic disturbance / reference (includes gyro-mag consistency check)
+	info->mag_dist_detected = vqf_get_mag_dist_detected();
 	info->mag_ref_norm = getMagRefNorm(&state);
 	info->mag_ref_dip = getMagRefDip(&state);
 

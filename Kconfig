@@ -408,6 +408,20 @@ config VQF_ADAPTIVE_TAU_ACC
         smoothed transitions to avoid Butterworth LP filter transients.
         This feature is experimental and may affect heading stability.
 
+config VQF_MAG_GYRO_CONSISTENCY
+    bool "VQF gyro-mag direction consistency check"
+    default y
+    depends on SENSOR_USE_VQF
+    help
+        Additional magnetic disturbance criterion beyond VQF's norm/dip
+        detection: over short windows, the measured field direction must
+        rotate with the inverse of the gyro-observed sensor rotation. A
+        direction error beyond a rotation-scaled threshold rejects heading
+        corrections for a hold period and reports the field as disturbed
+        (also gating online mag calibration sampling). Catches disturbances
+        that preserve field norm and dip angle, which the built-in
+        detection cannot see.
+
 config VQF_MAG_SLEW_LIMIT
     bool "VQF magnetometer heading slew-rate limit"
     default y
