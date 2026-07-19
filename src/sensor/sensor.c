@@ -32,6 +32,9 @@
 #if IS_ENABLED(CONFIG_SENSOR_MAG_HARD_IRON_TRACKING)
 #include "calibration/mag_bias_track.h"
 #endif
+#if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
+#include "calibration/sens_auto.h"
+#endif
 #include "motion_state.h"
 #include "zephyr/logging/log.h"
 
@@ -338,6 +341,15 @@ bool sensor_fusion_get_mag_dist_detected(void)
 		return false;
 	}
 	return sensor_fusion->get_mag_dist_detected();
+}
+
+bool sensor_fusion_get_gyro_bias(float out[3])
+{
+	if (!sensor_fusion || !sensor_fusion->get_gyro_bias || !out) {
+		return false;
+	}
+	sensor_fusion->get_gyro_bias(out);
+	return true;
 }
 
 void sensor_fusion_reset_mag_ref(void)
@@ -1891,6 +1903,10 @@ static void feed_calibrated_gyro(float *g, float dt, int *g_count, float *debug_
 	// Process fusion with calibrated gyro data
 	sensor_fusion->update_gyro(g, dt);
 	(*g_count)++;
+
+#if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
+	sensor_sens_auto_feed_gyro(g, dt);
+#endif
 }
 #endif /* CONFIG_SENSOR_GYRO_OVERSAMPLING <= 1 */
 
@@ -2124,6 +2140,10 @@ static void feed_calibrated_accel(float *a, float dt, float *a_sum, int *a_count
 		a_sum[i] += a[i];
 	}
 	(*a_count)++;
+
+#if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
+	sensor_sens_auto_feed_accel(a);
+#endif
 }
 
 static void feed_accel_sample(
@@ -2533,6 +2553,9 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 			sensor_fusion->update_mag(m, mag_dt);
 			mag_vqf_updates_since_status++;
 			sensor_mag_ref_accumulate(m, frame->a_sum, frame->a_count);
+#if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
+			sensor_sens_auto_feed_mag(m, sensor_fusion_get_mag_dist_detected());
+#endif
 		}
 
 		float mag_device[3];

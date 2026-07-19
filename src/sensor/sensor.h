@@ -56,6 +56,7 @@ void sensor_mag_ref_reset(void);
 bool sensor_fusion_get_rest_detected(void);
 bool sensor_fusion_get_relative_rest_deviations(float out[2]);
 bool sensor_fusion_get_mag_dist_detected(void);
+bool sensor_fusion_get_gyro_bias(float out[3]);
 void sensor_fusion_reset_mag_ref(void);
 void sensor_fusion_set_mag_ref(float norm, float dip);
 bool sensor_fusion_get_mag_ref(float *norm, float *dip);
