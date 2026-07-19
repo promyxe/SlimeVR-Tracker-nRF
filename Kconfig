@@ -408,6 +408,18 @@ config VQF_ADAPTIVE_TAU_ACC
         smoothed transitions to avoid Butterworth LP filter transients.
         This feature is experimental and may affect heading stability.
 
+config VQF_MAG_SLEW_LIMIT
+    bool "VQF magnetometer heading slew-rate limit"
+    default y
+    depends on SENSOR_USE_VQF
+    help
+        Bound the rate at which the magnetometer is allowed to pull heading
+        (1 deg/s at rest, 8 deg/s in motion). Turns the heading snap after a
+        mag reference change (e.g. an online calibration update) into a
+        smooth correction and limits the yaw error a wrongly-accepted
+        disturbed field can inject before disturbance rejection reacts.
+        Initial heading convergence is not limited.
+
 config VQF_BENCH
     bool "Enable VQF benchmark console command"
     default n

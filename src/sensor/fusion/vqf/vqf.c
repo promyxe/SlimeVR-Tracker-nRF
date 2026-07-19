@@ -86,6 +86,28 @@
 #define TAU_SMOOTH_ALPHA_UP 0.21f        /* tauAcc increase smoothing (per sample) */
 #endif                                   /* CONFIG_VQF_ADAPTIVE_TAU_ACC */
 
+#if IS_ENABLED(CONFIG_VQF_MAG_SLEW_LIMIT)
+/* ---------- Magnetometer heading slew-rate limiting ---------- */
+/*
+ * VQF applies k*disAngle to the heading offset delta on every mag update.
+ * With the normal gain (k ≈ Ts/tauMag) a large disagreement — e.g. right
+ * after an online calibration update re-establishes the mag reference, or
+ * when a wrongly-accepted disturbed field pulls the heading — corrects at
+ * up to disAngle/tauMag, which is a visible heading snap of tens of °/s.
+ *
+ * Clamping the per-update delta change bounds both effects: corrections
+ * stay below a rate that is imperceptible in VR, and a bad field can only
+ * inject a bounded yaw error before disturbance rejection reacts.
+ *
+ * Not applied while kMagInit is active (initial convergence must stay fast).
+ * At rest the true disagreement drift is tiny, so a much lower ceiling is
+ * used; during motion fresh field sampling justifies faster correction.
+ */
+#define MAG_SLEW_MAX_RATE_REST_DPS 1.0f
+#define MAG_SLEW_MAX_RATE_MOTION_DPS 8.0f
+#endif /* CONFIG_VQF_MAG_SLEW_LIMIT */
+
+static uint8_t imu_id;
 
 static vqf_params_t params;
 static vqf_state_t state;
@@ -393,8 +415,61 @@ void vqf_update_accel(float *a, float time)
 	vqf_track_rest_diag();
 }
 
+#if IS_ENABLED(CONFIG_VQF_MAG_SLEW_LIMIT)
+static float vqf_wrap_pi(float angle)
+{
+	if (angle > (float)M_PI) {
+		angle -= 2.0f * (float)M_PI;
+	} else if (angle < -(float)M_PI) {
+		angle += 2.0f * (float)M_PI;
+	}
+	return angle;
+}
+
+/**
+ * @brief Clamp the heading change applied by the last mag update.
+ *
+ * Called after updateMag with the pre-update delta and the update time step.
+ * Skipped during initial convergence (kMagInit active).
+ */
+static void vqf_apply_mag_slew_limit(float delta_before, float dt)
+{
+	if (state.kMagInit != 0.0f || dt <= 0.0f) {
+		return;
+	}
+
+	float change = vqf_wrap_pi(state.delta - delta_before);
+	float max_rate_dps = state.restDetected ? MAG_SLEW_MAX_RATE_REST_DPS : MAG_SLEW_MAX_RATE_MOTION_DPS;
+	float max_change = max_rate_dps * DEG_TO_RAD * dt;
+
+	if (change > max_change) {
+		change = max_change;
+	} else if (change < -max_change) {
+		change = -max_change;
+	} else {
+		return; // within limit, keep the library result
+	}
+
+	state.delta = vqf_wrap_pi(delta_before + change);
+	state.lastMagCorrAngularRate = change / dt;
+}
+#endif /* CONFIG_VQF_MAG_SLEW_LIMIT */
+
+/* Post-update processing shared by both mag entry points. */
+static void vqf_post_mag_update(float delta_before, float dt)
+{
+#if IS_ENABLED(CONFIG_VQF_MAG_SLEW_LIMIT)
+	vqf_apply_mag_slew_limit(delta_before, dt);
+#else
+	ARG_UNUSED(delta_before);
+	ARG_UNUSED(dt);
+#endif
+}
+
 void vqf_update_mag(float *m, float time)
 {
+	float delta_before = state.delta;
+
 	// Use the caller-supplied time step when valid so that VQF time accumulators
 	// (magCandidateT, magRejectT, etc.) and gain k run at the correct real-time
 	// rate even when the sensor loop runs faster or slower than the mag ODR.
@@ -408,11 +483,27 @@ void vqf_update_mag(float *m, float time)
 			synth_ts = 1; // avoid the "uninitialized" sentinel value
 		}
 		updateMagTs(&params, &state, &coeffs, m, synth_ts);
+		vqf_post_mag_update(delta_before, time);
 	} else {
 		updateMag(&params, &state, &coeffs, m);
+		vqf_post_mag_update(delta_before, coeffs.magTs);
 	}
 }
 
+void vqf_update_mag_ts(float *m, uint64_t timestamp_us)
+{
+	float delta_before = state.delta;
+	// Mirror the library's dt derivation so post-processing uses the same step.
+	float dt = coeffs.magTs;
+	if (state.lastMagTsUs != 0 && timestamp_us > state.lastMagTsUs) {
+		uint64_t diff = timestamp_us - state.lastMagTsUs;
+		if (diff > 0 && diff <= 10000000ULL) {
+			dt = (float)diff / 1e6f;
+		}
+	}
+	updateMagTs(&params, &state, &coeffs, m, timestamp_us);
+	vqf_post_mag_update(delta_before, dt);
+}
 void vqf_update(float *g, float *a, float *m, float time)
 {
 	// TODO: time unused?
