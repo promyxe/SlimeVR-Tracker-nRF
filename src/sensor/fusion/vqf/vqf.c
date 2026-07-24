@@ -193,6 +193,8 @@ static float consist_window_t;
 static float consist_hold_t; /* remaining disturbance hold time */
 #endif
 
+static float dist_continuous_s; /* persistent disturbance release timer */
+
 /* Rest detection diagnostics */
 static uint32_t rest_enter_count;
 static uint32_t rest_exit_count;
@@ -266,6 +268,7 @@ void vqf_init(float g_time, float a_time, float m_time)
 	prev_rest_detected = false;
 	rest_event_idx = 0;
 	rest_event_total = 0;
+	dist_continuous_s = 0;
 	vqf_consist_reset();
 }
 
@@ -292,6 +295,7 @@ void vqf_load(const void *data)
 	prev_rest_detected = false;
 	rest_event_idx = 0;
 	rest_event_total = 0;
+	dist_continuous_s = 0;
 	vqf_consist_reset();
 }
 
@@ -315,6 +319,7 @@ static void vqf_consist_reset(void)
 	consist_have_ref = false;
 	consist_window_t = 0.0f;
 	consist_hold_t = 0.0f;
+	dist_continuous_s = 0;
 }
 
 /**
@@ -423,6 +428,7 @@ static bool vqf_consist_check_mag(const float m[3], float dt)
 #else
 static inline void vqf_consist_reset(void)
 {
+	dist_continuous_s = 0;
 }
 #endif /* CONFIG_VQF_MAG_GYRO_CONSISTENCY */
 
@@ -798,6 +804,15 @@ bool vqf_get_mag_dist_detected(void)
 #if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
 	dist = dist || consist_hold_t > 0.0f;
 #endif
+
+	if (dist) {
+		dist_continuous_s += coeffs.magTs;
+		if (dist_continuous_s > CONFIG_VQF_MAG_CONT_DIST_THRESH_S) {
+			return false;
+		}
+	} else {
+		dist_continuous_s = 0;
+	}
 	return dist;
 }
 

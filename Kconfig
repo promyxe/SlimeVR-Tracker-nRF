@@ -434,6 +434,19 @@ config VQF_MAG_SLEW_LIMIT
         disturbed field can inject before disturbance rejection reacts.
         Initial heading convergence is not limited.
 
+config VQF_MAG_CONT_DIST_THRESH_S
+    int "Persistent magnetic disturbance release threshold (s)"
+    default 60
+    range 10 600
+    depends on SENSOR_USE_VQF
+    help
+        When the magnetometer field has been continuously flagged as disturbed
+        for this many seconds, vqf_get_mag_dist_detected() clears the external
+        flag so downstream consumers (norm tracking, online calibration,
+        hard-iron tracking, temperature compensation) can resume. VQF's
+        internal disturbance state machine keeps running independently.
+        Only the external flag that gates calibration is affected.
+
 config VQF_BENCH
     bool "Enable VQF benchmark console command"
     default n
