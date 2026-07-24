@@ -751,10 +751,16 @@ static void vqf_post_mag_update(float delta_before, float dt, bool consist_distu
 		trust = 0.0f;
 	}
 
-	// Gyro-mag consistency: when active, halve whatever trust remains
+	// Gyro-mag consistency: at rest a direction mismatch is likely genuine
+	// disturbance (full reject). In motion it is expected from spatial field
+	// gradients — reduce trust but keep heading correction active.
 #if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
 	if (consist_disturbed && trust > 0.0f) {
-		trust *= 0.5f;
+		if (state.restDetected) {
+			trust = 0.0f;
+		} else {
+			trust *= 0.5f;
+		}
 	}
 #else
 	ARG_UNUSED(consist_disturbed);
