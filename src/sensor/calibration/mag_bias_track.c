@@ -24,6 +24,9 @@
 #include "sensor/sensor.h"
 #include "system/system.h"
 #include "util.h"
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+#include "fusion/vqf/vqf.h"
+#endif
 
 #include <math.h>
 #include <string.h>
@@ -280,6 +283,14 @@ void sensor_calibration_mag_bias_track_sample(const float m_cal[3])
 	if (now - mbt_last_sample_time < MBT_MIN_INTERVAL_MS) {
 		return;
 	}
+
+	// In a gradient field the sphere center is ambiguous — the field
+	// direction changes from spatial variation, not rotation. Skip.
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+	if (vqf_get_grad_cls_gradient()) {
+		return;
+	}
+#endif
 
 	// A sphere center is only observable from rotation: require a minimum
 	// direction change so resting samples do not drive the estimate.

@@ -24,6 +24,9 @@
 #include "sensor/sensor.h"
 #include "system/system.h"
 #include "util.h"
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+#include "fusion/vqf/vqf.h"
+#endif
 
 #include <math.h>
 #include <string.h>
@@ -335,7 +338,11 @@ void sensor_sens_auto_feed_accel(const float a[3])
 void sensor_sens_auto_feed_mag(const float m[3], bool mag_disturbed)
 {
 	last_mag_ms = k_uptime_get();
-	mag_undisturbed = !mag_disturbed;
+	mag_undisturbed = !mag_disturbed
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+		&& !vqf_get_grad_cls_gradient()
+#endif
+		;
 	if (mag_disturbed) {
 		sa_window_reset();
 		return;
