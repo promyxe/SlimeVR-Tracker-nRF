@@ -29,6 +29,7 @@
 #include "util.h"
 #include "connection/connection.h"
 #include "calibration/calibration.h"
+#include "calibration/mag_common.h"
 #if IS_ENABLED(CONFIG_SENSOR_MAG_HARD_IRON_TRACKING)
 #include "calibration/mag_bias_track.h"
 #endif
@@ -2575,9 +2576,9 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 			// Only active when VQF's disturbance flag is set, to avoid adding phase
 			// lag during clean field. State self-clears when disturbance clears.
 #if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+			static float mag_lpf[3];
+			static bool mag_lpf_init;
 			if (sensor_fusion_get_mag_dist_detected()) {
-				static float mag_lpf[3];
-				static bool mag_lpf_init;
 				if (!mag_lpf_init) {
 					memcpy(mag_lpf, m, sizeof(mag_lpf));
 					mag_lpf_init = true;
