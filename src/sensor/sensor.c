@@ -40,6 +40,9 @@
 #endif
 #include "motion_state.h"
 #include "zephyr/logging/log.h"
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+#include "fusion/vqf/vqf.h"
+#endif
 
 #include <math.h>
 #include <hal/nrf_gpio.h>
@@ -2557,7 +2560,43 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 				}
 			}
 			last_mag_fusion_ticks = now_ticks;
+
+			// Feed Phase 2 gradient classifier the raw calibrated sample (pre-LPF)
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+			vqf_grad_classifier_sample(m, mag_dt);
+#endif
+
+			// Phase 1: conditional low-pass filter during magnetic disturbance.
+			// Spatial gradients from steel are sustained as long as the sensor moves
+			// through them — the filter converges and stays. Transients are brief —
+			// the filtered value lags the step but decays back before the reference
+			// shifts. The LPF reduces integrated heading error from gradient traversal
+			// without permanently suppressing correction.
+			// Only active when VQF's disturbance flag is set, to avoid adding phase
+			// lag during clean field. State self-clears when disturbance clears.
+#if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
+			if (sensor_fusion_get_mag_dist_detected()) {
+#ifndef CONFIG_SENSOR_MAG_LPF_TAU
+#define CONFIG_SENSOR_MAG_LPF_TAU 0.5f
+#endif
+				static float mag_lpf[3];
+				static bool mag_lpf_init;
+				if (!mag_lpf_init) {
+					memcpy(mag_lpf, m, sizeof(mag_lpf));
+					mag_lpf_init = true;
+				}
+				float alpha = mag_dt / (mag_dt + CONFIG_SENSOR_MAG_LPF_TAU);
+				for (int i = 0; i < 3; i++) {
+					mag_lpf[i] += alpha * (m[i] - mag_lpf[i]);
+				}
+				sensor_fusion->update_mag(mag_lpf, mag_dt);
+			} else {
+				mag_lpf_init = false;
+				sensor_fusion->update_mag(m, mag_dt);
+			}
+#else
 			sensor_fusion->update_mag(m, mag_dt);
+#endif
 			mag_vqf_updates_since_status++;
 			sensor_mag_ref_accumulate(m, frame->a_sum, frame->a_count);
 #if IS_ENABLED(CONFIG_SENSOR_USE_SENS_AUTO_CALIBRATION)
