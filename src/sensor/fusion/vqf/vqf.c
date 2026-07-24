@@ -476,10 +476,20 @@ void vqf_update_gyro(float *g, float time)
 	for (int i = 0; i < 3; i++) {
 		g_rad[i] = g[i] * DEG_TO_RAD;
 	}
-	updateGyr(&params, &state, &coeffs, g_rad);
+	// Prefer caller dt so ODR changes / jitter do not stick to coeffs->gyrTs.
+	float dt = coeffs.gyrTs;
+	if (time > 0.0f && time < 10.0f) {
+		uint64_t synth_ts = state.lastGyrTsUs + (uint64_t)(time * 1e6f);
+		if (synth_ts == 0) {
+			synth_ts = 1;
+		}
+		dt = time;
+		updateGyrTs(&params, &state, &coeffs, g_rad, synth_ts);
+	} else {
+		updateGyr(&params, &state, &coeffs, g_rad);
+	}
 	// Feed bias-corrected gyro to gradient classifier vector-sum accumulator
 	float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
-	float dt = coeffs.gyrTs;
 	for (int i = 0; i < 3; i++) {
 		grad_cls.omega_sum[i] += w[i] * dt;
 	}
@@ -506,17 +516,6 @@ void vqf_update_gyro_ts(float *g, uint64_t timestamp_us)
 #endif
 	updateGyrTs(&params, &state, &coeffs, g_rad, timestamp_us);
 	// Feed bias-corrected gyro to gradient classifier vector-sum accumulator
-#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
-#else
-	float dt = coeffs.gyrTs;
-#endif
-	{
-		float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
-		for (int i = 0; i < 3; i++) {
-			grad_cls.omega_sum[i] += w[i] * dt;
-		}
-		grad_cls.omega_dt += dt;
-	}
 #if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
 #else
 	float dt = coeffs.gyrTs;
@@ -718,8 +717,8 @@ static void vqf_post_mag_update(float delta_before, float dt, bool consist_distu
 	// Mahalanobis-like distance from expected clean-condition sigma
 	float ref_norm = getMagRefNorm(&state);
 	float ref_dip = getMagRefDip(&state);
-	float norm_dev = state.magNormDip[0] - ref_norm;
-	float dip_dev = state.magNormDip[1] - ref_dip;
+	float norm_dev = (state.magNormDip[0] - ref_norm) / fmaxf(ref_norm, 1e-6f);  /* fractional */
+	float dip_dev = state.magNormDip[1] - ref_dip;                                 /* absolute (rad) */
 	float nz = norm_dev / (CONFIG_VQF_MAG_NORM_SIGMA * 0.001f);  /* Kconfig: millis */
 	float dz = dip_dev  / (CONFIG_VQF_MAG_DIP_SIGMA * 0.001f);
 	float d = sqrtf(nz * nz + dz * dz);
