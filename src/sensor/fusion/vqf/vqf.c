@@ -963,7 +963,10 @@ bool vqf_get_mag_dist_detected(void)
 #endif
 
 	if (dist) {
-		dist_continuous_s += coeffs.magTs;
+		dist_continuous_s += coeffs.magTs;    /* coeffs.magTs in seconds */
+		/* CONFIG_VQF_MAG_CONT_DIST_THRESH_S is in raw seconds (default 60),
+		 * unlike the _TAU parameters which use ms. The _S suffix in the
+		 * config name distinguishes this. No * 0.001f scaling needed here. */
 		if (dist_continuous_s > CONFIG_VQF_MAG_CONT_DIST_THRESH_S) {
 			return false;
 		}
