@@ -25,7 +25,7 @@
 #include "system/system.h"
 #include "util.h"
 #if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
-#include "fusion/vqf/vqf.h"
+#include "sensor/fusion/vqf/vqf.h"
 #endif
 
 #include <math.h>
