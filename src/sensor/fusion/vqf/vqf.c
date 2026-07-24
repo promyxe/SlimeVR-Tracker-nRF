@@ -706,20 +706,64 @@ static void vqf_apply_mag_slew_limit(float delta_before, float dt)
 #endif /* CONFIG_VQF_MAG_SLEW_LIMIT */
 
 /* Pre/post-update processing shared by both mag entry points. */
+/* Huber M-estimation tuning constants for continuous heading trust.
+ * NORM_SIGMA and DIP_SIGMA are the expected clean-condition standard
+ * deviations of calibrated field norm and dip angle — they are physical
+ * quantities, not curve-shape constants. */
+#ifndef CONFIG_VQF_MAG_NORM_SIGMA
+#define CONFIG_VQF_MAG_NORM_SIGMA 0.15f
+#endif
+#ifndef CONFIG_VQF_MAG_DIP_SIGMA
+#define CONFIG_VQF_MAG_DIP_SIGMA 0.17f /* provisional, may absorb old 0.3 dip de-weighting */
+#endif
+#ifndef CONFIG_VQF_MAG_HUBER_DELTA
+#define CONFIG_VQF_MAG_HUBER_DELTA 2.0f /* conventional starting point (2 sigma before discounting) */
+#endif
+#ifndef CONFIG_VQF_MAG_GRADIENT_TRUST
+#define CONFIG_VQF_MAG_GRADIENT_TRUST 0.8f /* post-Huber ceiling when classifier says gradient */
+#endif
+
 static void vqf_post_mag_update(float delta_before, float dt, bool consist_disturbed)
 {
+	// Mahalanobis-like distance from expected clean-condition sigma
+	float ref_norm = getMagRefNorm(&state);
+	float ref_dip = getMagRefDip(&state);
+	float norm_dev = state.magNormDip[0] - ref_norm;
+	float dip_dev = state.magNormDip[1] - ref_dip;
+	float nz = norm_dev / CONFIG_VQF_MAG_NORM_SIGMA;
+	float dz = dip_dev  / CONFIG_VQF_MAG_DIP_SIGMA;
+	float d = sqrtf(nz * nz + dz * dz);  // no powf — plain FPU multiply
+
+	// Huber weight: quadratic (full trust) within delta, linear beyond
+	float delta = CONFIG_VQF_MAG_HUBER_DELTA;
+	float w_huber = (d <= delta) ? 1.0f : delta / d;
+
+	// Gradient classifier override: cap even when d is small — a sample
+	// can momentarily cross zero deviation by coincidence in a room the
+	// classifier (via rotation-residual history) knows is bad.
+	float trust = w_huber;
+	if (grad_cls_gradient) {
+		trust = fminf(w_huber, CONFIG_VQF_MAG_GRADIENT_TRUST);
+	}
+
+	// Transient override: full reject regardless of Huber weight
+	if (grad_cls_transient) {
+		trust = 0.0f;
+	}
+
+	// Gyro-mag consistency: when active, halve whatever trust remains
 #if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
-	if (consist_disturbed) {
-		// Field direction is inconsistent with the gyro-observed rotation:
-		// reject the heading correction the library just applied. The
-		// library's own norm/dip tracking and timers still ran normally.
-		state.delta = delta_before;
-		state.lastMagCorrAngularRate = 0.0f;
-		return;
+	if (consist_disturbed && trust > 0.0f) {
+		trust *= 0.5f;
 	}
 #else
 	ARG_UNUSED(consist_disturbed);
 #endif
+
+	float change = state.delta - delta_before;
+	state.delta = delta_before + change * trust;
+	state.lastMagCorrAngularRate = trust > 0.0f ? change * trust / dt : 0.0f;
+
 #if IS_ENABLED(CONFIG_VQF_MAG_SLEW_LIMIT)
 	vqf_apply_mag_slew_limit(delta_before, dt);
 #else
