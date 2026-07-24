@@ -135,8 +135,6 @@
 #define MAG_CONSIST_MAX_ROT_RAD (160.0f * DEG_TO_RAD)
 #endif /* CONFIG_VQF_MAG_GYRO_CONSISTENCY */
 
-static uint8_t imu_id;
-
 static vqf_params_t params;
 static vqf_state_t state;
 static vqf_coeffs_t coeffs;
