@@ -195,6 +195,31 @@ static float consist_hold_t; /* remaining disturbance hold time */
 
 static float dist_continuous_s; /* persistent disturbance release timer */
 
+/* Gradient-vs-transient field classifier state.
+ *
+ * The residual r = dm/dt + ω × m is ~0 during any rotation in a uniform
+ * field (transport theorem: dm_body/dt = -ω × m_body). Non-zero r means
+ * the field itself is changing in the world frame - either from a spatial
+ * gradient (sensor moving through steel-distorted field) or a transient
+ * (magnet/electronics). The discriminator is gated on VQF's restDetected:
+ * large sustained residual at rest → transient; during motion → gradient.
+ *
+ * The gyro accumulator provides interval-averaged ω (vector sum, no
+ * coning correction - coning error is negligible at the classifier's
+ * noise floor). The EMA smooths the residual magnitude with τ ~ 0.5 s.
+ */
+static struct {
+	float omega_sum[3];      /* bias-corrected gyro accumulated since last mag sample */
+	float omega_dt;          /* accumulated gyro interval time */
+	float prev_m[3];         /* previous mag sample for adjacent-sample diff */
+	bool have_prev;          /* true once the first mag sample has been stored */
+	float ema;               /* EMA of |r| */
+	bool init;               /* EMA seeded after first valid dm/dt */
+} grad_cls;
+
+static bool grad_cls_gradient;
+static bool grad_cls_transient;
+
 /* Rest detection diagnostics */
 static uint32_t rest_enter_count;
 static uint32_t rest_exit_count;
@@ -269,6 +294,9 @@ void vqf_init(float g_time, float a_time, float m_time)
 	rest_event_idx = 0;
 	rest_event_total = 0;
 	dist_continuous_s = 0;
+	memset(&grad_cls, 0, sizeof(grad_cls));
+	grad_cls_gradient = false;
+	grad_cls_transient = false;
 	vqf_consist_reset();
 }
 
@@ -296,6 +324,9 @@ void vqf_load(const void *data)
 	rest_event_idx = 0;
 	rest_event_total = 0;
 	dist_continuous_s = 0;
+	memset(&grad_cls, 0, sizeof(grad_cls));
+	grad_cls_gradient = false;
+	grad_cls_transient = false;
 	vqf_consist_reset();
 }
 
@@ -320,6 +351,9 @@ static void vqf_consist_reset(void)
 	consist_window_t = 0.0f;
 	consist_hold_t = 0.0f;
 	dist_continuous_s = 0;
+	memset(&grad_cls, 0, sizeof(grad_cls));
+	grad_cls_gradient = false;
+	grad_cls_transient = false;
 }
 
 /**
@@ -429,6 +463,9 @@ static bool vqf_consist_check_mag(const float m[3], float dt)
 static inline void vqf_consist_reset(void)
 {
 	dist_continuous_s = 0;
+	memset(&grad_cls, 0, sizeof(grad_cls));
+	grad_cls_gradient = false;
+	grad_cls_transient = false;
 }
 #endif /* CONFIG_VQF_MAG_GYRO_CONSISTENCY */
 
@@ -440,6 +477,7 @@ void vqf_update_gyro(float *g, float time)
 		g_rad[i] = g[i] * DEG_TO_RAD;
 	}
 	updateGyr(&params, &state, &coeffs, g_rad);
+	// Feed bias-corrected gyro to gradient classifier vector-sum accumulator
 	float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
 	float dt = coeffs.gyrTs;
 	for (int i = 0; i < 3; i++) {
@@ -467,6 +505,18 @@ void vqf_update_gyro_ts(float *g, uint64_t timestamp_us)
 	}
 #endif
 	updateGyrTs(&params, &state, &coeffs, g_rad, timestamp_us);
+	// Feed bias-corrected gyro to gradient classifier vector-sum accumulator
+#if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
+#else
+	float dt = coeffs.gyrTs;
+#endif
+	{
+		float w[3] = {g_rad[0] - state.bias[0], g_rad[1] - state.bias[1], g_rad[2] - state.bias[2]};
+		for (int i = 0; i < 3; i++) {
+			grad_cls.omega_sum[i] += w[i] * dt;
+		}
+		grad_cls.omega_dt += dt;
+	}
 #if IS_ENABLED(CONFIG_VQF_MAG_GYRO_CONSISTENCY)
 #else
 	float dt = coeffs.gyrTs;
@@ -796,6 +846,77 @@ void vqf_get_quat(float *q)
 bool vqf_get_rest_detected(void)
 {
 	return getRestDetected(&state);
+}
+
+/* ---- Gradient-vs-transient classifier ---- */
+
+#ifndef CONFIG_VQF_MAG_GRAD_CLS_TH_LOW
+#define CONFIG_VQF_MAG_GRAD_CLS_TH_LOW 0.02f /* provisional, needs bench tuning */
+#endif
+#ifndef CONFIG_VQF_MAG_GRAD_CLS_TAU
+#define CONFIG_VQF_MAG_GRAD_CLS_TAU 0.5f /* EMA time constant (s) */
+#endif
+
+void vqf_grad_classifier_sample(const float m[3], float mag_dt)
+{
+	float eff_dt = grad_cls.omega_dt > 0.0f ? grad_cls.omega_dt : mag_dt;
+	float inv_eff_dt = eff_dt > 1e-9f ? 1.0f / eff_dt : 0.0f;
+	float omega_avg[3] = {
+		grad_cls.omega_sum[0] * inv_eff_dt,
+		grad_cls.omega_sum[1] * inv_eff_dt,
+		grad_cls.omega_sum[2] * inv_eff_dt,
+	};
+	memset(grad_cls.omega_sum, 0, sizeof(grad_cls.omega_sum));
+	grad_cls.omega_dt = 0;
+
+	if (grad_cls.have_prev) {
+		float dmdt[3] = {
+			(m[0] - grad_cls.prev_m[0]) * inv_eff_dt,
+			(m[1] - grad_cls.prev_m[1]) * inv_eff_dt,
+			(m[2] - grad_cls.prev_m[2]) * inv_eff_dt,
+		};
+		float r[3];
+		r[0] = dmdt[0] + omega_avg[1] * m[2] - omega_avg[2] * m[1];
+		r[1] = dmdt[1] + omega_avg[2] * m[0] - omega_avg[0] * m[2];
+		r[2] = dmdt[2] + omega_avg[0] * m[1] - omega_avg[1] * m[0];
+		float r_norm = sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+
+		float tau = CONFIG_VQF_MAG_GRAD_CLS_TAU;
+		float alpha = (tau > 0.0f && eff_dt > 0.0f) ? eff_dt / (eff_dt + tau) : 1.0f;
+		if (grad_cls.init) {
+			grad_cls.ema += alpha * (r_norm - grad_cls.ema);
+		} else {
+			grad_cls.ema = r_norm;
+			grad_cls.init = true;
+		}
+
+		if (grad_cls.ema < CONFIG_VQF_MAG_GRAD_CLS_TH_LOW) {
+			grad_cls_gradient = false;
+			grad_cls_transient = false;
+		} else if (state.restDetected) {
+			grad_cls_transient = true;
+			grad_cls_gradient = false;
+		} else {
+			grad_cls_gradient = true;
+			grad_cls_transient = false;
+		}
+	} else {
+		grad_cls_gradient = false;
+		grad_cls_transient = false;
+	}
+
+	memcpy(grad_cls.prev_m, m, sizeof(grad_cls.prev_m));
+	grad_cls.have_prev = true;
+}
+
+bool vqf_get_grad_cls_gradient(void)
+{
+	return grad_cls_gradient;
+}
+
+bool vqf_get_grad_cls_transient(void)
+{
+	return grad_cls_transient;
 }
 
 bool vqf_get_mag_dist_detected(void)
