@@ -2576,16 +2576,13 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 			// lag during clean field. State self-clears when disturbance clears.
 #if IS_ENABLED(CONFIG_SENSOR_USE_VQF)
 			if (sensor_fusion_get_mag_dist_detected()) {
-#ifndef CONFIG_SENSOR_MAG_LPF_TAU
-#define CONFIG_SENSOR_MAG_LPF_TAU 0.5f
-#endif
 				static float mag_lpf[3];
 				static bool mag_lpf_init;
 				if (!mag_lpf_init) {
 					memcpy(mag_lpf, m, sizeof(mag_lpf));
 					mag_lpf_init = true;
 				}
-				float alpha = mag_dt / (mag_dt + CONFIG_SENSOR_MAG_LPF_TAU);
+				float alpha = mag_dt / (mag_dt + CONFIG_SENSOR_MAG_LPF_TAU * 0.001f); /* Kconfig: ms -> s */
 				for (int i = 0; i < 3; i++) {
 					mag_lpf[i] += alpha * (m[i] - mag_lpf[i]);
 				}

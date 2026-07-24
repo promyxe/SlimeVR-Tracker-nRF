@@ -708,20 +708,10 @@ static void vqf_apply_mag_slew_limit(float delta_before, float dt)
 /* Pre/post-update processing shared by both mag entry points. */
 /* Huber M-estimation tuning constants for continuous heading trust.
  * NORM_SIGMA and DIP_SIGMA are the expected clean-condition standard
- * deviations of calibrated field norm and dip angle — they are physical
- * quantities, not curve-shape constants. */
-#ifndef CONFIG_VQF_MAG_NORM_SIGMA
-#define CONFIG_VQF_MAG_NORM_SIGMA 0.15f
-#endif
-#ifndef CONFIG_VQF_MAG_DIP_SIGMA
-#define CONFIG_VQF_MAG_DIP_SIGMA 0.17f /* provisional, may absorb old 0.3 dip de-weighting */
-#endif
-#ifndef CONFIG_VQF_MAG_HUBER_DELTA
-#define CONFIG_VQF_MAG_HUBER_DELTA 2.0f /* conventional starting point (2 sigma before discounting) */
-#endif
-#ifndef CONFIG_VQF_MAG_GRADIENT_TRUST
-#define CONFIG_VQF_MAG_GRADIENT_TRUST 0.8f /* post-Huber ceiling when classifier says gradient */
-#endif
+ * deviations of calibrated field norm and dip angle - they are physical
+ * quantities, not curve-shape constants.
+ * Kconfig units: NORM_SIGMA and DIP_SIGMA in millis (150 = 0.15),
+ * HUBER_DELTA in millisigma (2000 = 2.0), GRADIENT_TRUST in percent (80). */
 
 static void vqf_post_mag_update(float delta_before, float dt, bool consist_disturbed)
 {
@@ -730,12 +720,12 @@ static void vqf_post_mag_update(float delta_before, float dt, bool consist_distu
 	float ref_dip = getMagRefDip(&state);
 	float norm_dev = state.magNormDip[0] - ref_norm;
 	float dip_dev = state.magNormDip[1] - ref_dip;
-	float nz = norm_dev / CONFIG_VQF_MAG_NORM_SIGMA;
-	float dz = dip_dev  / CONFIG_VQF_MAG_DIP_SIGMA;
-	float d = sqrtf(nz * nz + dz * dz);  // no powf — plain FPU multiply
+	float nz = norm_dev / (CONFIG_VQF_MAG_NORM_SIGMA * 0.001f);  /* Kconfig: millis */
+	float dz = dip_dev  / (CONFIG_VQF_MAG_DIP_SIGMA * 0.001f);
+	float d = sqrtf(nz * nz + dz * dz);
 
 	// Huber weight: quadratic (full trust) within delta, linear beyond
-	float delta = CONFIG_VQF_MAG_HUBER_DELTA;
+	float delta = CONFIG_VQF_MAG_HUBER_DELTA * 0.001f;  /* Kconfig: millisigma */
 	float w_huber = (d <= delta) ? 1.0f : delta / d;
 
 	// Gradient classifier override: cap even when d is small — a sample
@@ -743,7 +733,7 @@ static void vqf_post_mag_update(float delta_before, float dt, bool consist_distu
 	// classifier (via rotation-residual history) knows is bad.
 	float trust = w_huber;
 	if (grad_cls_gradient) {
-		trust = fminf(w_huber, CONFIG_VQF_MAG_GRADIENT_TRUST);
+		trust = fminf(w_huber, CONFIG_VQF_MAG_GRADIENT_TRUST * 0.01f);  /* Kconfig: percent */
 	}
 
 	// Transient override: full reject regardless of Huber weight
@@ -899,13 +889,7 @@ bool vqf_get_rest_detected(void)
 }
 
 /* ---- Gradient-vs-transient classifier ---- */
-
-#ifndef CONFIG_VQF_MAG_GRAD_CLS_TH_LOW
-#define CONFIG_VQF_MAG_GRAD_CLS_TH_LOW 0.02f /* provisional, needs bench tuning */
-#endif
-#ifndef CONFIG_VQF_MAG_GRAD_CLS_TAU
-#define CONFIG_VQF_MAG_GRAD_CLS_TAU 0.5f /* EMA time constant (s) */
-#endif
+/* Kconfig values: TH_LOW in millis (20 = 0.02), TAU in ms (500 = 0.5 s) */
 
 void vqf_grad_classifier_sample(const float m[3], float mag_dt)
 {
@@ -931,7 +915,7 @@ void vqf_grad_classifier_sample(const float m[3], float mag_dt)
 		r[2] = dmdt[2] + omega_avg[0] * m[1] - omega_avg[1] * m[0];
 		float r_norm = sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
 
-		float tau = CONFIG_VQF_MAG_GRAD_CLS_TAU;
+		float tau = CONFIG_VQF_MAG_GRAD_CLS_TAU * 0.001f; /* Kconfig: ms -> s */
 		float alpha = (tau > 0.0f && eff_dt > 0.0f) ? eff_dt / (eff_dt + tau) : 1.0f;
 		if (grad_cls.init) {
 			grad_cls.ema += alpha * (r_norm - grad_cls.ema);
@@ -940,7 +924,7 @@ void vqf_grad_classifier_sample(const float m[3], float mag_dt)
 			grad_cls.init = true;
 		}
 
-		if (grad_cls.ema < CONFIG_VQF_MAG_GRAD_CLS_TH_LOW) {
+		if (grad_cls.ema < CONFIG_VQF_MAG_GRAD_CLS_TH_LOW * 0.001f) { /* Kconfig: millis -> float */
 			grad_cls_gradient = false;
 			grad_cls_transient = false;
 		} else if (state.restDetected) {

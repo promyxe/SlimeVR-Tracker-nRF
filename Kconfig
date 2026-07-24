@@ -376,6 +376,18 @@ config SENSOR_MAG_ODR
         Fixed at magnetometer init for the session (nearest supported continuous rate).
         Common values: 100, 200. Higher rates may not be supported by all sensors.
 
+config SENSOR_MAG_LPF_TAU
+    int "Magnetometer LPF time constant (ms)"
+    default 500
+    range 10 5000
+    depends on SENSOR_USE_VQF
+    help
+        Low-pass filter time constant for magnetometer smoothing during
+        magnetic disturbance. Applied as alpha = dt / (dt + tau), so the
+        filter maintains the same effective time constant regardless of
+        the actual mag ODR. The LPF is only active when VQF's disturbance
+        flag is set, and self-clears when disturbance clears. Default 500 ms.
+
 choice
 	prompt "Sensor fusion"
     default SENSOR_USE_VQF
@@ -446,6 +458,74 @@ config VQF_MAG_CONT_DIST_THRESH_S
         hard-iron tracking, temperature compensation) can resume. VQF's
         internal disturbance state machine keeps running independently.
         Only the external flag that gates calibration is affected.
+
+config VQF_MAG_GRAD_CLS_TH_LOW
+    int "Gradient classifier residual threshold (milli normalized units)"
+    default 20
+    range 1 500
+    depends on SENSOR_USE_VQF
+    help
+        Running EMA threshold for the rotation-residual magnitude. When the
+        EMA of |dm/dt + w x m| stays below this value, the field is classified
+        as uniform. Above it, the classifier returns gradient or transient
+        depending on rest/motion state. The default 20 corresponds to 0.02 in
+        normalized mag units — this is provisional and must be bench-tuned.
+
+config VQF_MAG_GRAD_CLS_TAU
+    int "Gradient classifier EMA time constant (ms)"
+    default 500
+    range 10 5000
+    depends on SENSOR_USE_VQF
+    help
+        Time constant for the exponential moving average of the rotation-
+        residual magnitude. Longer values smooth more but react slower to
+        changes. Default 500 ms.
+
+config VQF_MAG_NORM_SIGMA
+    int "Expected clean-condition norm sigma (milli normalized units)"
+    default 150
+    range 10 1000
+    depends on SENSOR_USE_VQF
+    help
+        Expected clean-condition standard deviation of the calibrated field
+        norm, used as the normalization factor in the Huber trust weight.
+        This is a physical quantity (sensor noise floor under clean conditions),
+        not a curve-shape constant. Default 150 corresponds to 0.15 in
+        normalized mag units.
+
+config VQF_MAG_DIP_SIGMA
+    int "Expected clean-condition dip sigma (milliradians)"
+    default 170
+    range 10 1000
+    depends on SENSOR_USE_VQF
+    help
+        Expected clean-condition standard deviation of the magnetic dip angle
+        in milliradians. Used as the normalization factor in the Huber trust
+        weight alongside NORM_SIGMA. Default 170 corresponds to 0.17 rad -
+        provisional, may absorb the old 0.3 dip de-weighting factor and may
+        need re-derivation from bench data.
+
+config VQF_MAG_HUBER_DELTA
+    int "Huber M-estimation delta (milli sigma)"
+    default 2000
+    range 100 10000
+    depends on SENSOR_USE_VQF
+    help
+        Huber tuning parameter controlling where the quadratic (full trust)
+        region ends and the linear (discounting) region begins. Default 2000
+        corresponds to 2.0 sigma - a conventional starting point in M-estimation
+        practice, expressed in millisigma for Kconfig.
+
+config VQF_MAG_GRADIENT_TRUST
+    int "Maximum heading trust in gradient mode (percent)"
+    default 80
+    range 1 100
+    depends on SENSOR_USE_VQF
+    help
+        When the gradient classifier identifies a spatial field gradient
+        (steel-distorted room), the Huber-computed trust is capped at this
+        percentage even when the instantaneous norm/dip deviation happens
+        to be small. Default 80 = 80 percent.
 
 config VQF_BENCH
     bool "Enable VQF benchmark console command"
