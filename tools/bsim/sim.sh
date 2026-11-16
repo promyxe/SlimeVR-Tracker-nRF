@@ -28,18 +28,17 @@ setup)
 	;;
 build)
 	# The radio model only accepts BLE packet formats; ESB differs, so downgrade those checks
-	# to warnings in a private copy of nrf_hw_models.
+	# to warnings in a patched copy mounted over nrf_hw_models.
 	"${DOCKER[@]}" slime-bsim:ready bash -c '
-		set -e
-		rm -rf /tmp/hw && cp -r /ws/modules/bsim_hw_models/nrf_hw_models /tmp/hw
+		rm -rf /out/hw && cp -r /ws/modules/bsim_hw_models/nrf_hw_models /out/hw
 		python3 - <<PY
-p = "/tmp/hw/src/HW_models/NHW_RADIO_utils.c"
+p = "/out/hw/src/HW_models/NHW_RADIO_utils.c"
 s = open(p).read()
 cut = s.index("static void nrfra_check_802154_conf")
 open(p, "w").write(s[:cut].replace("bs_trace_error_line_time(", "bs_trace_warning_line_time(") + s[cut:])
-PY
-		cd /ws && west build -p always -b nrf52_bsim -d /out/build /app -- \
-			-DZEPHYR_NRF_HW_MODELS_MODULE_DIR=/tmp/hw > /out/build.log 2>&1 || { tail -20 /out/build.log; exit 1; }'
+PY'
+	"${DOCKER[@]}" -v "$OUT/hw":/ws/modules/bsim_hw_models/nrf_hw_models slime-bsim:ready bash -c '
+		cd /ws && west build -p always -b nrf52_bsim -d /out/build /app > /out/build.log 2>&1 || { tail -20 /out/build.log; exit 1; }'
 	echo "built $OUT/build/app/zephyr/zephyr.exe"
 	;;
 run)
