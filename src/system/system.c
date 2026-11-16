@@ -70,7 +70,11 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 {
 	fatal_record.magic = 0;
 	fatal_record.reason = reason;
+#if defined(CONFIG_ARCH_POSIX)
+	fatal_record.pc = 0; /* simulated boards have no Cortex-M exception frame */
+#else
 	fatal_record.pc = esf ? esf->basic.pc : 0;
+#endif
 	fatal_record.check = FATAL_RECORD_MAGIC ^ fatal_record.reason ^ fatal_record.pc;
 	__DMB();
 	fatal_record.magic = FATAL_RECORD_MAGIC;

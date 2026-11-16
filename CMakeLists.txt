@@ -162,6 +162,21 @@ if(NOT CONFIG_SENSOR_USE_MAGNETOMETER)
   list(FILTER app_sources EXCLUDE REGEX ".*/sensor/scan_ext\\.c$")
   list(FILTER app_sources EXCLUDE REGEX ".*/sensor/calibration/(online_mag|mag_fit|magneto)\\.c$")
 endif()
+if(CONFIG_BOARD_NRF52_BSIM)
+  # Simulated tracker (tools/bsim): emulated sensors, stubbed battery, host-side data reader.
+  list(FILTER app_sources EXCLUDE REGEX ".*/system/battery\\.c$")
+  target_sources(app PRIVATE
+    tools/bsim/port/icm45686_emul.c
+    tools/bsim/port/qmc6309_emul.c
+    tools/bsim/port/sim_stubs.c)
+  target_include_directories(app PRIVATE tools/bsim/port)
+  # nrfx helpers missing from the bsim nrfx replacement headers.
+  target_compile_options(app PRIVATE "-DNRFX_ABS(x)=((x)<0?-(x):(x))" "-DNRF_STATIC_ASSERT(c,m)=_Static_assert(c,m)")
+  target_sources(native_simulator INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools/bsim/port/sim_host.c)
+  # nrf_hw_models lacks the nRF54 errata helper used by NCS esb_workarounds.c.
+  # (function-like macro: CMake drops those from COMPILE_DEFINITIONS, so pass it as an option)
+  zephyr_compile_options("-DNRF_ERRATA_STATIC_CHECK(a,b)=0")
+endif()
 list(FILTER app_sources EXCLUDE REGEX ".*/sensor/imu/.*\\.c$")
 list(FILTER app_sources EXCLUDE REGEX ".*/sensor/mag/.*\\.c$")
 target_sources(app PRIVATE ${app_sources})

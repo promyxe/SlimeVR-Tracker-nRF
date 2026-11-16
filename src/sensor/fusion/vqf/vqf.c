@@ -37,6 +37,7 @@
 
 #include "../vqf/vqf.h" // conflicting with vqf.h in vqf-c
 
+
 #include "retained.h" // for BUILD_ASSERT on fusion_data size
 
 #ifndef DEG_TO_RAD
@@ -62,7 +63,9 @@ typedef struct {
 #define VQF_SAVED_VERSION 3u
 #define VQF_MEM_SIZE (sizeof(vqf_saved_header_t) + sizeof(vqf_state_t) + sizeof(vqf_coeffs_t))
 BUILD_ASSERT(sizeof(vqf_saved_header_t) == 8, "VQF retained header ABI changed");
+#if !defined(CONFIG_ARCH_POSIX) /* host x86 (nrf52_bsim) struct layout differs; never persisted there */
 BUILD_ASSERT(VQF_MEM_SIZE == 840, "VQF retained ABI changed");
+#endif
 
 static float last_a[3] = {0};
 #if defined(CONFIG_VQF_BENCH)

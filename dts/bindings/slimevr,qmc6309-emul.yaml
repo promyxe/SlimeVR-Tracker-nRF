@@ -1,0 +1,3 @@
+description: QMC6309 register emulator for nrf52_bsim (tools/bsim)
+compatible: "slimevr,qmc6309-emul"
+include: i2c-device.yaml
