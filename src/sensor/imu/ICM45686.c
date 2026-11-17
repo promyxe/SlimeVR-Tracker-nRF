@@ -682,6 +682,8 @@ uint16_t icm45_fifo_read(uint8_t *data, uint16_t len)
 	uint16_t count = packets * ICM45686_FIFO_PACKET_SIZE;
 	err = ssi_burst_read_interval(SENSOR_INTERFACE_DEV_IMU, ICM45686_FIFO_DATA, data, count, ICM45686_FIFO_PACKET_SIZE);
 	if (err) {
+		/* Failed burst: the batch is gone, so report the gap. */
+		sensor_gyro_report_discontinuity();
 		return 0;
 	}
 	icm45_cache_fifo_temp(data, packets);

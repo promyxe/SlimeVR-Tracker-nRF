@@ -208,7 +208,10 @@ int ssi_reg_read_interval(enum sensor_interface_dev dev, uint8_t reg, uint8_t *b
 
 int ssi_burst_read_interval(enum sensor_interface_dev dev, uint8_t reg, uint8_t *buf, uint32_t len, uint32_t interval)
 {
-	(void)dev; (void)reg;
+	(void)dev;
+	transaction_count++;
+	if (fail_transaction == transaction_count || reg == fail_read_reg)
+		return -1;
 	interval_bytes += len;
 	/* Deliberately write every requested byte: canaries expose oversized transfers. */
 	memset(buf, 0xA5, len);

@@ -8,6 +8,7 @@
 
 #include "sensor/imu/ICM42686.h"
 #include "sensor/imu/ICM42688.h"
+#include "sensor/imu/ICM45686.h"
 #include "sensor/imu/LSM6DSM.h"
 #include "sensor/imu/LSM6DSO.h"
 
@@ -251,6 +252,53 @@ static void test_dso_fifo_discontinuity(void)
 	assert(host_bus_gyro_discontinuities() == 0);
 }
 
+static void test_icm_fifo_discontinuity(void)
+{
+	/* A failed data burst loses the batch and must report a gap; a failed count
+	 * read is non-destructive and must not. */
+	const struct {
+		const char *name;
+		uint16_t (*fifo_read)(uint8_t *, uint16_t);
+		uint8_t count, data;
+	} drivers[] = {
+		{"ICM42688", icm_fifo_read, ICM42688_FIFO_COUNTH, ICM42688_FIFO_DATA},
+		{"ICM42686", icm42686_fifo_read, ICM42686_FIFO_COUNTH, ICM42686_FIFO_DATA},
+		{"ICM45686", icm45_fifo_read, ICM45686_FIFO_COUNT_0, ICM45686_FIFO_DATA},
+	};
+	for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++) {
+		uint8_t buf[64];
+
+		/* Two packets queued, data burst fails. */
+		host_bus_reset();
+		host_bus_fifo(drivers[i].count, false);
+		host_bus_set_register(drivers[i].count, 0);
+		host_bus_set_register(drivers[i].count + 1, 2);
+		host_bus_fail_read(drivers[i].data);
+		memset(buf, 0xCC, sizeof(buf));
+		assert(drivers[i].fifo_read(buf, sizeof(buf)) == 0);
+		assert(host_bus_gyro_discontinuities() == 1);
+
+		/* Count read fails: nothing consumed, no gap. */
+		host_bus_reset();
+		host_bus_fifo(drivers[i].count, false);
+		host_bus_set_register(drivers[i].count, 0);
+		host_bus_set_register(drivers[i].count + 1, 2);
+		host_bus_fail_read(drivers[i].count);
+		assert(drivers[i].fifo_read(buf, sizeof(buf)) == 0);
+		assert(host_bus_gyro_discontinuities() == 0);
+
+		/* Healthy read reports nothing. */
+		host_bus_reset();
+		host_bus_fifo(drivers[i].count, false);
+		host_bus_set_register(drivers[i].count, 0);
+		host_bus_set_register(drivers[i].count + 1, 2);
+		assert(drivers[i].fifo_read(buf, sizeof(buf)) == 2);
+		assert(host_bus_gyro_discontinuities() == 0);
+
+		printf("%s FIFO: data-read gap reported, count-read retry silent\n", drivers[i].name);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const struct icm_case drivers[] = {
@@ -263,6 +311,7 @@ int main(int argc, char **argv)
 	};
 	if (argc == 1 || !strcmp(argv[1], "icm")) {
 		for (unsigned i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++) test_icm(&drivers[i]);
+		test_icm_fifo_discontinuity();
 	}
 
 	if (argc == 1 || !strcmp(argv[1], "lsm")) {

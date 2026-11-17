@@ -75,6 +75,8 @@ static int ssi_burst_read_interval(int dev, uint8_t reg, uint8_t *out, uint16_t 
     if (data_error || (fail_second_data && data_reads == 2)) return -1;
     memcpy(out,&fifo_model[model_offset],len);model_offset+=len;available=0;return 0;
 }
+static unsigned gyro_discontinuities;
+static void sensor_gyro_report_discontinuity(void) { gyro_discontinuities++; }
 static int UPDATE_ODR(float a,float g,float *out_a,float *out_g) {*out_a=a;*out_g=g;return 0;}
 '''
 main = r'''
@@ -115,16 +117,24 @@ int main(void) {
     load(0);assert(FIFO_READ(buffer,sizeof(buffer)) == 0);
     close_to(TEMP_READ(),(float)register_temp/132.48f+25); /* empty acquisition cannot reuse prior batch */
     cache_one(2000);load(1);count_error=1;
-    assert(FIFO_READ(buffer,sizeof(buffer)) == 0);count_error=0;reg_error=1;
+    assert(FIFO_READ(buffer,sizeof(buffer)) == 0);count_error=0;
+    assert(gyro_discontinuities == 0); /* count read: non-destructive, no gap */
+    reg_error=1;
     assert(isnan(TEMP_READ()));reg_error=0;
     cache_one(2000);load(1);data_error=1;
-    assert(FIFO_READ(buffer,sizeof(buffer)) == 0);data_error=0;reg_error=1;
+    assert(FIFO_READ(buffer,sizeof(buffer)) == 0);data_error=0;
+    assert(gyro_discontinuities == 1); /* failed burst: gap reported */
+    reg_error=1;
     assert(isnan(TEMP_READ()));reg_error=0;
     cache_one(2000);packet(0,0x78,3000);load(1);fail_second_count=true;
-    assert(FIFO_READ(buffer,sizeof(buffer)) == 1);fail_second_count=false;reg_error=1;
+    assert(FIFO_READ(buffer,sizeof(buffer)) == 1);fail_second_count=false;
+    assert(gyro_discontinuities == 1); /* partial batch, count retry: silent */
+    reg_error=1;
     assert(isnan(TEMP_READ()));reg_error=0; /* partial FIFO followed by bus failure invalidates cache */
     packet(0,0x78,2000);packet(1,0x78,3000);load(1);next_chunk_available=1;fail_second_data=true;
-    assert(FIFO_READ(buffer,sizeof(buffer)) == 1);fail_second_data=false;reg_error=1;
+    assert(FIFO_READ(buffer,sizeof(buffer)) == 1);fail_second_data=false;
+    assert(gyro_discontinuities == 2); /* partial batch then failed burst: gap */
+    reg_error=1;
     assert(isnan(TEMP_READ()));reg_error=0;
     cache_one(2000);SHUTDOWN();reg_error=1;assert(isnan(TEMP_READ()));reg_error=0;
     cache_one(2000);init_error=-1;assert(INIT(0,0.0025f,0.0025f,&a,&g)<0);
