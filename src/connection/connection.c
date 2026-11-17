@@ -1933,6 +1933,12 @@ static void connection_thread(void)
 #endif
 		) {
 			sensor_data_capture_t capture;
+#if CONFIG_SENSOR_SLOT_SYNC
+			/* late binding: a delayed slot still carries the newest sample */
+			if (quat_ready && !in_test_mode && tdma_is_enabled()) {
+				(void)tdma_wait_for_slot_open(32);
+			}
+#endif
 			sensor_data_snapshot_capture(&sensor_data_snapshot, &capture);
 			quat_ready = in_test_mode ? test_send_due : (capture.pending & SENSOR_STREAM_QA) != 0;
 #if CONFIG_SENSOR_USE_MAGNETOMETER

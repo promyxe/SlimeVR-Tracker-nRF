@@ -303,7 +303,7 @@ static bool tdma_ping_target(
 	return false;
 }
 
-static bool tdma_wait_for_data_admission(uint8_t reserve_ticks)
+static bool tdma_wait_for_data_admission(uint8_t reserve_ticks, bool claim)
 {
 	struct tdma_config config;
 	if (!tdma_config_snapshot(&config) || config.slot_ticks <= reserve_ticks) {
@@ -328,9 +328,11 @@ static bool tdma_wait_for_data_admission(uint8_t reserve_ticks)
 		bool guarded = tdma_data_frame_guarded(frame, &config, &own_ping);
 		if (tdma_frame_eligible(frame, &config) && !guarded && unused
 			&& pos >= TDMA_SLOT_TARGET_OFFSET && pos <= config.slot_ticks - reserve_ticks) {
-			tdma_last_admitted_pack = config.pack;
-			tdma_last_admitted_frame = frame;
-			tdma_admitted++;
+			if (claim) {
+				tdma_last_admitted_pack = config.pack;
+				tdma_last_admitted_frame = frame;
+				tdma_admitted++;
+			}
 			irq_unlock(key);
 			return true;
 		}
@@ -391,7 +393,59 @@ static bool tdma_wait_for_data_admission(uint8_t reserve_ticks)
 
 bool tdma_wait_for_slot(uint8_t payload_length)
 {
-	return tdma_wait_for_data_admission(tdma_reserve_ticks(payload_length));
+	return tdma_wait_for_data_admission(tdma_reserve_ticks(payload_length), true);
+}
+
+bool tdma_wait_for_slot_open(uint8_t payload_length)
+{
+	return tdma_wait_for_data_admission(tdma_reserve_ticks(payload_length), false);
+}
+
+bool tdma_next_slot_wake(uint32_t lead_us, uint32_t min_period_us, uint32_t max_delay_us, int64_t *wake_ticks)
+{
+	static uint32_t last_pack, last_target;
+	struct tdma_config config;
+	struct esb_network_clock clock;
+	if (!tdma_config_snapshot(&config) || !tdma_clock_snapshot(&config, &clock)) {
+		return false;
+	}
+	uint32_t lead = (uint32_t)(((uint64_t)lead_us * 32768U + 999999U) / 1000000U);
+	uint32_t slot_target = (uint32_t)config.slot_index * config.slot_ticks + TDMA_SLOT_TARGET_OFFSET;
+	uint32_t earliest = clock.receiver_ticks + lead;
+	if (last_pack == config.pack) {
+		uint32_t next = last_target + (uint32_t)(((uint64_t)min_period_us * 32768U) / 1000000U);
+		if ((int32_t)(next - earliest) > 0) {
+			earliest = next;
+		}
+	}
+	uint32_t frame = earliest / config.frame_ticks;
+	if (frame * config.frame_ticks + slot_target < earliest) {
+		frame = tdma_next_frame(frame, &config);
+	}
+	/* skip rollover and PING-guarded frames, like data admission */
+	for (unsigned i = 0;; i++) {
+		bool ignored;
+		if (tdma_frame_eligible(frame, &config) && !tdma_data_frame_guarded(frame, &config, &ignored)) {
+			break;
+		}
+		if (i == TDMA_SEARCH_FRAMES) {
+			return false;
+		}
+		frame = tdma_next_frame(frame, &config);
+	}
+	uint32_t target = frame * config.frame_ticks + slot_target;
+	uint32_t delay = target - lead - clock.receiver_ticks;
+	if (delay > 0x80000000U) {
+		delay = 0; /* lead exceeds time left */
+	}
+	uint64_t delay_us = net_ticks_to_us_ceil64(delay);
+	if (delay_us > max_delay_us) {
+		return false;
+	}
+	last_pack = config.pack;
+	last_target = target;
+	*wake_ticks = (int64_t)clock.local_kernel_ticks + (int64_t)k_us_to_ticks_ceil64(delay_us);
+	return true;
 }
 
 bool tdma_ping_wake_delay_ms(uint32_t *delay_ms)

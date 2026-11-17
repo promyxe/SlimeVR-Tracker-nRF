@@ -452,6 +452,28 @@ config SENSOR_UPDATE_TIME_LOW_NOISE_MS
         Lower values raise the loop/packet rate (and ESB TPS) at the cost of
         more I2C/SPI reads and CPU time. 6 ms matches the historic default.
 
+config SENSOR_SLOT_SYNC
+    bool "Run the sensor loop just before the tracker's TDMA slot"
+    default n
+    depends on CONNECTION_TDMA
+    help
+        While TDMA is synced, wake the sensor loop just before the own slot
+        (measured processing time + margin) instead of on the FIFO interrupt:
+        fresh sample in every packet, lower and constant latency.
+
+config SENSOR_SLOT_SYNC_MARGIN_US
+    int "Slot sync: margin added to the measured processing time (us)"
+    default 300
+    depends on SENSOR_SLOT_SYNC
+
+config SENSOR_SLOT_SYNC_MIN_PERIOD_US
+    int "Slot sync: minimum sensor loop period (us)"
+    default 4000
+    range 1000 20000
+    depends on SENSOR_SLOT_SYNC
+    help
+        Own slots closer than this are skipped (short frames, few trackers).
+
 config SENSOR_STARTUP_DISCARD_MS
     int "Startup IMU samples to discard (ms)"
     default 20
