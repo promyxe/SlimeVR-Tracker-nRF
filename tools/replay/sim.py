@@ -62,12 +62,16 @@ DESK = ((0.5, 3.5, 0.7), (0.0, 0.0, 0.03))
 #           50 Hz aliases it into a slow beat (mains vs crystal mismatch 0.05%: 40 s period).
 #   pocket: body-fixed magnet (phone/keys) appearing and disappearing for 1-3 min at a time.
 #   magnet: body-fixed magnet always present (strap clip, mount), far above factory hard iron.
+#   transient: a magnet passes close by every 30 s (world-fixed field pulse, ~2 s, 0.3-12 G peak,
+#           strong ones saturate the 8 G range); info["events"] = [(center_s, peak_g)].
 #   mag_tempco: QMC6309 offset drift per degree C during warm-up (body-fixed, like hard iron).
 #   dwell:  stay near (x, y) for the whole run (sitting at the desk).
 SCENARIOS.update({
     "mains": dict(height=0.5, dipoles=[DESK], mains=dict(at=(0.7, 3.3, 0.3), amp_g=0.005)),
     "pocket": dict(height=0.6, dipoles=[], pocket_g=0.03),
     "magnet": dict(height=0.6, dipoles=[], magnet_g=0.1),
+    "transient": dict(height=0.6, dipoles=[], transient_every_s=30.0),
+    "transient_ctrl": dict(height=0.6, dipoles=[], transient_every_s=30.0, transient_scale=0.0),  # same run, no field
     "warmup": dict(height=1.0, dipoles=[], mag_tempco_g=0.0005),
     "desk": dict(height=0.5, dipoles=[DESK], dwell=(0.9, 3.0), mains=dict(at=(0.7, 3.3, 0.3), amp_g=0.005)),
 })
@@ -182,6 +186,7 @@ def simulate(seed, minutes, scenario, path):
     hard = rng.normal(0, s["mag_hard_iron_g"], 3)
     mag = np.zeros((n, 3))
     body_extra = np.zeros((len(idx), 3))
+    magnet_on = []  # (start_s, end_s) of the pocket magnet
     if "mains" in sc:
         r = np.linalg.norm(pos[idx] - np.array(sc["mains"]["at"]), axis=1)
         amp = sc["mains"]["amp_g"] * np.minimum(0.3 / np.maximum(r, 0.05), 6.0)
@@ -194,12 +199,24 @@ def simulate(seed, minutes, scenario, path):
         while k < len(idx):
             dur = int(rng.uniform(60, 180) * MAG_HZ)
             on[k:k + dur] = state
+            if state:
+                magnet_on.append((k / MAG_HZ, min(k + dur, len(idx)) / MAG_HZ))
             state, k = not state, k + dur
         body_extra += on[:, None] * sc["pocket_g"] * np.array([0.7, -0.5, 0.5])
     if "magnet_g" in sc:
         body_extra += sc["magnet_g"] * np.array([-0.4, 0.8, 0.45])
     if "mag_tempco_g" in sc:
         body_extra += (temp[idx] - 25)[:, None] * sc["mag_tempco_g"] * rng.normal(0, 1, 3)
+    events = []
+    if "transient_every_s" in sc:
+        tm = t[idx]
+        world = np.zeros((len(idx), 3))
+        for tc in np.arange(40.0, tm[-1] - 10, sc["transient_every_s"]):
+            peak = float(np.exp(rng.uniform(np.log(0.3), np.log(12.0))))
+            d = rng.normal(0, 1, 3)
+            world += (sc.get("transient_scale", 1.0) * peak * np.exp(-((tm - tc) / 0.7) ** 2))[:, None] * (d / np.linalg.norm(d))
+            events.append((float(tc), peak))
+        b_body += np.einsum("nji,nj->ni", R[idx], world)
     mag[idx] = b_body @ soft.T + hard + body_extra + rng.normal(0, s["mag_noise_g"], (len(idx), 3))
 
     seq = np.arange(n) & 0xFFFF
@@ -211,7 +228,8 @@ def simulate(seed, minutes, scenario, path):
     still = float((env < 0.01).mean())
     dist_deg = np.degrees(np.arctan2(b_world[:, 0], b_world[:, 1]))
     return q_true, dict(still=still, field_dir_spread=float(dist_deg.std()),
-                        field_norm_spread=float(np.linalg.norm(b_world, axis=1).std() / np.linalg.norm(EARTH)))
+                        field_norm_spread=float(np.linalg.norm(b_world, axis=1).std() / np.linalg.norm(EARTH)),
+                        magnet_on=magnet_on, events=events)
 
 
 def heading_error(q_est, q_true):

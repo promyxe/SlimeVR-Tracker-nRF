@@ -7,7 +7,7 @@
 #include <string.h>
 
 struct row {
-	float g[3], a[3], m[3];
+	float g[3], a[3], m[3], temp;
 	int has_mag;
 };
 
@@ -68,6 +68,7 @@ static void load(void)
 			r->a[i] = (float)v[4 + i];
 			r->m[i] = (float)v[7 + i];
 		}
+		r->temp = (float)v[10];
 		r->has_mag = v[7] != 0 || v[8] != 0 || v[9] != 0;
 	}
 	fclose(f);
@@ -87,6 +88,44 @@ int slime_sim_sample(uint32_t idx, float g[3], float a[3], float m[3], int *has_
 	memcpy(m, rows[idx].m, sizeof(rows[idx].m));
 	*has_mag = rows[idx].has_mag;
 	return 0;
+}
+
+int slime_sim_field(double t_s, float m[3], float *temp_c)
+{
+	if (!loaded) {
+		load();
+	}
+	if (!nrows || t_s < 0) {
+		return -1;
+	}
+	/* linear interpolation between the mag rows around t */
+	double pos = t_s * rate_hz;
+	int64_t i = (int64_t)pos;
+	if (i >= (int64_t)nrows - 1) {
+		return -1;
+	}
+	int64_t lo = i, hi = i + 1;
+	while (lo > 0 && !rows[lo].has_mag) {
+		lo--;
+	}
+	while (hi < (int64_t)nrows - 1 && !rows[hi].has_mag) {
+		hi++;
+	}
+	double f = hi > lo ? (pos - (double)lo) / (double)(hi - lo) : 0;
+	f = f < 0 ? 0 : (f > 1 ? 1 : f);
+	for (int k = 0; k < 3; k++) {
+		m[k] = (float)((1 - f) * rows[lo].m[k] + f * rows[hi].m[k]);
+	}
+	*temp_c = rows[i].temp;
+	return 0;
+}
+
+double slime_sim_param(const char *name, double def)
+{
+	char key[64];
+	snprintf(key, sizeof(key), "SLIME_SIM_%s", name);
+	const char *v = getenv(key);
+	return v ? atof(v) : def;
 }
 
 float slime_sim_rate_hz(void)

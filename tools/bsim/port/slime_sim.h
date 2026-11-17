@@ -9,6 +9,11 @@
  * accel g, mag gauss in sensor frame). Returns 0 and fills the vectors, or -1
  * past the end. *has_mag is set when the row carries a mag sample. */
 int slime_sim_sample(uint32_t idx, float g[3], float a[3], float m[3], int *has_mag);
+/* Recorded field (gauss, sensor frame) at time t_s, interpolated between mag rows,
+ * plus the recording temperature. -1 past the end. */
+int slime_sim_field(double t_s, float m[3], float *temp_c);
+/* Env SLIME_SIM_<name> as a number, or def. */
+double slime_sim_param(const char *name, double def);
 /* Sample rate of the recording (gyro_odr_hz of its .meta.txt, default 400). */
 float slime_sim_rate_hz(void);
 /* 1 unless SLIME_SIM_MAG=0: enable the magnetometer after boot like the console "mag" command. */

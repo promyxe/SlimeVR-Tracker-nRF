@@ -12,6 +12,7 @@
 # Env: WORKSPACE (zephyr-workspace, default ../zephyr-workspace), OUT (default /tmp/slime-bsim),
 #      RECEIVER (default ../SlimeVR-Tracker-nRF-Receiver), WEST_ARGS (build, e.g. "-- -DCONFIG_X=y"),
 #      SLIME_SIM_MAG=0 (keep mag off), SLIME_SIM_MAGCAL=0 (skip the automatic "mag cal"),
+#      SLIME_SIM_* are passed through (QMC6309 chip model: see tools/bsim/port/qmc6309_emul.c),
 #      fullstack: STAGGER_US (boot offset between trackers), WLAN (bs_device_2G4_WLAN_actmod args,
 #      e.g. "-channel=6 -ConfigSet=5 -power=10"), PHY_ARGS (e.g. -defmodem=BLE_simple, needed for
 #      interference to have an effect).
@@ -21,10 +22,12 @@ WORKSPACE=$(cd "${WORKSPACE:-$APP/../zephyr-workspace}" && pwd)
 OUT=${OUT:-/tmp/slime-bsim}
 mkdir -p "$OUT"
 DOCKER=(docker run --rm --platform linux/amd64 -v "$APP":/app -v "$WORKSPACE":/ws -v "$OUT":/out)
+SIMENV=(); for v in $(compgen -e | grep '^SLIME_SIM_'); do SIMENV+=(-e "$v"); done  # chip model params etc.
 
 # Patched nrf_hw_models copy ($OUT/hw), mounted over the module for builds:
 # - the radio model only accepts BLE packet formats; ESB differs, so downgrade those checks to warnings
 # - RX listens on every RXADDRESSES pipe and sets RXMATCH (ESB data/ACKs use pipes 1-7)
+# - DISABLE completes synchronously (SDK busy-polls EVENTS_DISABLED)
 patch_hw() {
 	"${DOCKER[@]}" slime-bsim:ready bash -c '
 		rm -rf /out/hw && cp -r /ws/modules/bsim_hw_models/nrf_hw_models /out/hw
@@ -59,7 +62,17 @@ new = """    NRF_RADIO_regs.RXMATCH = 0;
     }
 """
 assert s.count(old) == 1
-open(d + "NHW_RADIO.c", "w").write(s.replace(old, new))
+s = s.replace(old, new)
+# DISABLE completes at once: the NCS ESB SDK busy-polls EVENTS_DISABLED, and a register poll
+# never advances simulated time (the real ramp-down is a few us).
+for st in ("TX", "RX"):
+    old = ("    radio_state = RAD_%sDISABLE;\n    NRF_RADIO_regs.STATE = RAD_%sDISABLE;\n    TIFS_state = TIFS_DISABLE;\n"
+           "    nhwra_set_Timer_RADIO(nsi_hws_get_time() + nhwra_timings_get_%s_rampdown_time());\n") % (st, st, st)
+    new = ("    radio_state = RAD_DISABLED;\n    NRF_RADIO_regs.STATE = RAD_DISABLED;\n    TIFS_state = TIFS_DISABLE;\n"
+           "    nhwra_set_Timer_RADIO(TIME_NEVER);\n    nhw_radio_stop_bit_counter();\n    nhw_RADIO_signal_EVENTS_DISABLED(0);\n")
+    assert s.count(old) == 1, st
+    s = s.replace(old, new)
+open(d + "NHW_RADIO.c", "w").write(s)
 PY'
 }
 
@@ -96,7 +109,7 @@ fullstack)
 		MOUNTS+=(-v "$(cd "$(dirname "$r")" && pwd)/$(basename "$r")":/rec/$i.csv -v "$(cd "$(dirname "$r")" && pwd)/$(basename "${r%.csv}").meta.txt":/rec/$i.meta.txt)
 		RECS+=(/rec/$i.csv); i=$((i+1))
 	done
-	"${DOCKER[@]}" "${MOUNTS[@]}" -e STAGGER_US="${STAGGER_US:-0}" -e WLAN="${WLAN:-}" -e PHY_ARGS="${PHY_ARGS:-}" \
+	"${DOCKER[@]}" "${SIMENV[@]}" "${MOUNTS[@]}" -e STAGGER_US="${STAGGER_US:-0}" -e WLAN="${WLAN:-}" -e PHY_ARGS="${PHY_ARGS:-}" \
 		slime-bsim:ready bash -c '
 		cd /opt/bsim/bin; SECS=$1; shift; N=$(( $# + 1 )); FS=/out/fs
 		for x in /out/rx/rxapp/zephyr/zephyr.exe /out/build/app/zephyr/zephyr.exe; do
@@ -122,7 +135,7 @@ run)
 	[ $# -eq 4 ] || { echo "usage: $0 run <rec.csv> <out.csv> <seconds>"; exit 2; }
 	REC=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 	DST=$(cd "$(dirname "$3")" && pwd)
-	"${DOCKER[@]}" -v "$(dirname "$REC")":/rec -v "$DST":/dst \
+	"${DOCKER[@]}" "${SIMENV[@]}" -v "$(dirname "$REC")":/rec -v "$DST":/dst \
 		-e SLIME_SIM_MAG="${SLIME_SIM_MAG:-1}" -e SLIME_SIM_MAGCAL="${SLIME_SIM_MAGCAL:-1}" \
 		-e SLIME_SIM_CSV="/rec/$(basename "$REC")" -e SLIME_SIM_OUT="/dst/$(basename "$3")" \
 		slime-bsim:ready bash -c "
