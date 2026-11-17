@@ -44,6 +44,7 @@
 #if CONFIG_SENSOR_USE_MAGNETOMETER
 #include "mag_common.h"
 #include "online_mag.h"
+#include "mag_offset_track.h"
 #endif
 
 LOG_MODULE_REGISTER(cal_mag, LOG_LEVEL_INF);
@@ -73,6 +74,76 @@ static float manual_last_accel_dir[3];
 static void magneto_update_dir_range(const float v[3]);
 static float magneto_min_dir_range(void);
 static void sensor_sample_mag_magneto_sample(const float m[3], float m_inv[4][3]);
+
+/* Sample reservoir to check fit quality (calibrated field strength variation). */
+#define MAG_CAL_CHECK_SAMPLES 64
+static float mag_cal_check[MAG_CAL_CHECK_SAMPLES][3];
+static uint32_t mag_cal_check_seen;
+
+static void mag_cal_check_add(const float m[3])
+{
+	uint32_t slot = mag_cal_check_seen++;
+	if (slot >= MAG_CAL_CHECK_SAMPLES) {
+		static uint32_t x = 2463534242u; /* xorshift32: uniform enough for a reservoir */
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		slot = x % mag_cal_check_seen;
+	}
+	if (slot < MAG_CAL_CHECK_SAMPLES) {
+		memcpy(mag_cal_check[slot], m, sizeof(mag_cal_check[slot]));
+	}
+}
+
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+/* Sphere fit |m|^2 = 2 c.m + k via normal equations. */
+static double sphere_ata[4][4];
+static double sphere_atb[4];
+
+static void sphere_add(const float m[3])
+{
+	double row[4] = {2.0 * m[0], 2.0 * m[1], 2.0 * m[2], 1.0};
+	double target = (double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2];
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			sphere_ata[i][j] += row[i] * row[j];
+		}
+		sphere_atb[i] += row[i] * target;
+	}
+}
+
+static bool sphere_solve(float center[3])
+{
+	double x[4];
+	if (!mag_sphere_solve(sphere_ata, sphere_atb, x)) {
+		return false;
+	}
+	for (int i = 0; i < 3; i++) {
+		center[i] = (float)x[i];
+	}
+	return true;
+}
+#endif
+
+/* Field strength variation (%) of the reservoir under m_inv. */
+static float mag_cal_norm_cv(const float m_inv[4][3])
+{
+	uint32_t n = MIN(mag_cal_check_seen, MAG_CAL_CHECK_SAMPLES);
+	float sum = 0, sum_sq = 0;
+	for (uint32_t k = 0; k < n; k++) {
+		float v[3];
+		memcpy(v, mag_cal_check[k], sizeof(v));
+		apply_BAinv(v, (float(*)[3])m_inv);
+		float norm = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+		sum += norm;
+		sum_sq += norm * norm;
+	}
+	if (n < 2 || sum <= 0) {
+		return INFINITY;
+	}
+	float mean = sum / n;
+	return 100.0f * sqrtf(fmaxf(sum_sq / n - mean * mean, 0.0f)) / mean;
+}
 
 static void manual_finish(uint16_t op, struct led_token feedback, uint8_t phase, uint8_t reason)
 {
@@ -160,6 +231,35 @@ int sensor_calibrate_mag(void)
 			m_inv[i][j] *= scale;
 		}
 	}
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+	{
+		/* Keep the ellipsoid's scale, replace offset and shape. */
+		float center[3];
+		float diag = (m_inv[1][0] + m_inv[2][1] + m_inv[3][2]) / 3.0f;
+		if (sphere_solve(center) && isfinite(diag) && diag > 0) {
+			LOG_INF("Mag cal: sphere fit offset %.4f %.4f %.4f (ellipsoid %.4f %.4f %.4f)", (double)center[0],
+				(double)center[1], (double)center[2], (double)m_inv[0][0], (double)m_inv[0][1],
+				(double)m_inv[0][2]);
+			memcpy(m_inv[0], center, sizeof(center));
+			for (unsigned i = 1; i < 4; i++) {
+				for (unsigned j = 0; j < 3; j++) {
+					m_inv[i][j] = (i - 1 == j) ? diag : 0.0f;
+				}
+			}
+		} else {
+			LOG_WRN("Mag cal: sphere fit failed, keeping ellipsoid");
+		}
+	}
+#endif
+	float norm_cv = mag_cal_norm_cv(m_inv); /* before magneto_reset() clears the reservoir */
+	LOG_INF("Mag cal quality: field strength CV %.2f%% over %u samples", (double)norm_cv,
+		(unsigned)MIN(mag_cal_check_seen, MAG_CAL_CHECK_SAMPLES));
+	if (!(norm_cv <= MAG_CAL_MAX_NORM_CV_PCT)) {
+		LOG_WRN("Mag cal rejected: field not uniform (CV %.2f%% > %.1f%%). Calibrate away from metal, "
+			"cables and magnets.", (double)norm_cv, (double)MAG_CAL_MAX_NORM_CV_PCT);
+		manual_finish(op, feedback, CAL_PHASE_FIT, CAL_REASON_INVALID_MODEL);
+		return -1;
+	}
 	magneto_reset();
 
 	LOG_INF("Magnetometer matrix:");
@@ -210,6 +310,11 @@ void magneto_reset(void)
 {
 #if CONFIG_SENSOR_USE_MAGNETOMETER
 	magneto_progress = 0;
+	mag_cal_check_seen = 0;
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+	memset(sphere_ata, 0, sizeof(sphere_ata));
+	memset(sphere_atb, 0, sizeof(sphere_atb));
+#endif
 	mag_cal_last_status_log = 0;
 	mag_cal_coverage = 0;
 #endif
@@ -565,6 +670,10 @@ static void sensor_sample_mag_magneto_sample(const float m[3], float m_inv[4][3]
 
 	// Accept sample - add to Magneto accumulator
 	magneto_sample(m[0], m[1], m[2], mag_cal_workspace.ata, &norm_sum, &sample_count); // 400us
+	mag_cal_check_add(m);
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+	sphere_add(m);
+#endif
 	float coverage_mag[3];
 	magneto_coverage_sample(&manual_center_estimator, raw_mag, coverage_mag);
 	magneto_update_dir_range(coverage_mag);

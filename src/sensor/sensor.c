@@ -31,6 +31,11 @@
 #include "connection/connection.h"
 #include "connection/tracker_events.h"
 #include "calibration/calibration.h"
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+#include "calibration/mag_offset_track.h"
+/* Reset with the mag reference, i.e. on calibration change. */
+static struct mag_offset_track mag_offset_tracker;
+#endif
 #include "calibration/imu_calibration.h"
 #include "calibration/cal_sample.h"
 #if CONFIG_SENSOR_USE_MAGNETOMETER
@@ -2466,6 +2471,9 @@ static float mag_feed_hz; /* last STATUS_INTERVAL window */
 void sensor_mag_ref_reset(void)
 {
 	sensor_fusion_reset_mag_ref();
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+	mag_offset_track_reset(&mag_offset_tracker);
+#endif
 }
 
 /* q maps fusion body to earth. Earth up in body is row 3 of R(q).
@@ -3208,6 +3216,9 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 			memcpy(frame->raw_m, uncalibrated_m, sizeof(uncalibrated_m));
 			mag_calibrated = false;
 		} else {
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+			mag_offset_track_apply(&mag_offset_tracker, frame->raw_m, mag_actual_time);
+#endif
 			// Track calibrated mag norm for online quality assessment
 			// Only track when fusion reports no magnetic disturbance — including
 			// disturbed samples inflates norm CV and prevents online cal from stabilizing

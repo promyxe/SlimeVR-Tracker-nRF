@@ -472,6 +472,23 @@ config SENSOR_USE_MAGNETOMETER
         magnetometer driver selections without changing saved calibration.
         The shared accelerometer calibration solver remains available.
 
+config SENSOR_MAG_CAL_SPHERE
+    bool "Mag calibration (manual and online): sphere fit (hard iron only)"
+    default y
+    depends on SENSOR_USE_MAGNETOMETER
+    help
+        Fit hard iron only (sphere) instead of a full ellipsoid for manual and
+        online mag calibration. Much better conditioned with partial rotation.
+        Disable if the board has strong soft-iron distortion.
+
+config SENSOR_MAG_OFFSET_TRACK
+    bool "Track residual magnetometer offset (body-fixed magnets)"
+    default y
+    depends on SENSOR_USE_MAGNETOMETER
+    help
+        Subtract a residual hard-iron offset (e.g. phone/keys next to the
+        tracker) found by a rolling 20 s sphere fit.
+
 config SENSOR_MAG_ODR
     int "Magnetometer ODR (Hz)"
     default 50

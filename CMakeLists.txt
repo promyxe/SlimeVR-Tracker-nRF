@@ -160,7 +160,7 @@ if(NOT CONFIG_CONNECTION_RAW_COLLECTION)
 endif()
 if(NOT CONFIG_SENSOR_USE_MAGNETOMETER)
   list(FILTER app_sources EXCLUDE REGEX ".*/sensor/scan_ext\\.c$")
-  list(FILTER app_sources EXCLUDE REGEX ".*/sensor/calibration/(online_mag|mag_fit|magneto)\\.c$")
+  list(FILTER app_sources EXCLUDE REGEX ".*/sensor/calibration/(online_mag|mag_fit|magneto|mag_offset_track)\\.c$")
 endif()
 if(CONFIG_BOARD_NRF52_BSIM)
   # Simulated tracker (tools/bsim): emulated sensors, stubbed battery, host-side data reader.

@@ -34,6 +34,9 @@
 #define MAG_CAL_MIN_DIR_RANGE 0.5f
 #define MAG_CAL_MIN_RAW_AXIS_RANGE 0.5f
 #define MAG_CAL_MAX_AXIS_GAIN 8.0f
+/* Max field strength variation (%) of an accepted fit; higher means the field
+ * was not uniform during calibration (desk, cables, magnets). */
+#define MAG_CAL_MAX_NORM_CV_PCT 3.0f
 
 typedef struct {
 	float min[3];
