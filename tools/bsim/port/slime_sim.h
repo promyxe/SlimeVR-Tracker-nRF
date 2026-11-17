@@ -15,6 +15,8 @@ float slime_sim_rate_hz(void);
 int slime_sim_mag_requested(void);
 /* 1 unless SLIME_SIM_MAGCAL=0: run a manual "mag cal" 1 s after enabling the mag. */
 int slime_sim_magcal_requested(void);
+
+int slime_sim_cpu_us_per_sample(void);
 /* Append "t_us,qw,qx,qy,qz" to SLIME_SIM_OUT. */
 void slime_sim_log_quat(uint64_t t_us, const float q[4]);
 

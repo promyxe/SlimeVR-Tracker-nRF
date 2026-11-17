@@ -173,6 +173,9 @@ static int icm45686_emul_io(const struct emul *target, const struct spi_config *
 			rx_off++;
 		}
 	}
+	/* SPI at 8 MHz (1 us/byte) plus fusion time per FIFO sample read */
+	k_busy_wait(total + (read && (cmd & 0x7F) == REG_FIFO_DATA
+			     ? (total - 1) / FRAME_SIZE * slime_sim_cpu_us_per_sample() : 0));
 	return 0;
 }
 

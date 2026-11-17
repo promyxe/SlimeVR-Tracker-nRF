@@ -21,6 +21,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "replay"))
 from sim import HZ, heading_error  # noqa: E402
 
 
+def qmul(a, b):
+    w1, x1, y1, z1 = a.T
+    w2, x2, y2, z2 = b.T
+    return np.stack([w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2, w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2], axis=1)
+
+
+def truth_at(tr, s):
+    """Truth quaternions at fractional sample index s (normalized lerp)."""
+    i = np.clip(np.floor(s).astype(int), 0, len(tr) - 2)
+    a = (s - i)[:, None]
+    q0, q1 = tr[i], tr[i + 1]
+    q1 = q1 * np.sign(np.sum(q0 * q1, axis=1))[:, None]
+    q = (1 - a) * q0 + a * q1
+    return q / np.linalg.norm(q, axis=1)[:, None]
+
+
+def e2e_latency_ms(t, q, tr, off_s, step=5):
+    """Lag (sample to receiver output) that best aligns body-frame rotation increments with truth."""
+    conj = np.array([1, -1, -1, -1])
+    d_rx = qmul(q[:-step] * conj, q[step:])
+    moving = np.abs(d_rx[:, 0]) < np.cos(np.radians(1.0))  # > 2 deg rotation per increment
+    if moving.sum() < 50:
+        return None
+    errs = []
+    for lag in np.arange(0.0, 25.0, 0.25):
+        qt = truth_at(tr, (t - off_s - lag / 1e3) * HZ)
+        d_tr = qmul(qt[:-step] * conj, qt[step:])
+        dot = np.clip(np.abs(np.sum(d_rx[moving] * d_tr[moving], axis=1)), 0, 1)
+        errs.append((np.mean(np.arccos(dot)), lag))
+    return min(errs)[1]
+
+
 def decode(path, t0=0.0):
     quats, counts = defaultdict(list), defaultdict(lambda: defaultdict(int))
     seq = defaultdict(lambda: [0, 0])  # receiver sequence-gap stats from type 3: [received, lost]
@@ -103,6 +136,10 @@ def main():
                 err = np.abs(heading_error(q, tr[idx[keep]]))
                 print(f"  heading error at rx after {args.settle:g}s: max {err.max():.2f} "
                       f"rms {np.sqrt(np.mean(err ** 2)):.2f} final {err[-1]:.2f} deg")
+                q = q / np.linalg.norm(q, axis=1)[:, None]
+                lag = e2e_latency_ms(t[keep], q, tr, off / 1e6)
+                print("  end-to-end latency (IMU sample -> receiver, incl. fusion lag): "
+                      + ("n/a (too little motion)" if lag is None else f"{lag:.2f} ms"))
 
 
 if __name__ == "__main__":

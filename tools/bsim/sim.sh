@@ -10,7 +10,7 @@
 # Recordings: tools/replay/sim.py (raw-collection format). Compare: tools/bsim/compare.py,
 # full stack: tools/bsim/fullstack.py (link/latency/heading), tools/bsim/phy_timing.py (radio timing).
 # Env: WORKSPACE (zephyr-workspace, default ../zephyr-workspace), OUT (default /tmp/slime-bsim),
-#      RECEIVER (default ../SlimeVR-Tracker-nRF-Receiver),
+#      RECEIVER (default ../SlimeVR-Tracker-nRF-Receiver), WEST_ARGS (build, e.g. "-- -DCONFIG_X=y"),
 #      SLIME_SIM_MAG=0 (keep mag off), SLIME_SIM_MAGCAL=0 (skip the automatic "mag cal"),
 #      fullstack: STAGGER_US (boot offset between trackers), WLAN (bs_device_2G4_WLAN_actmod args,
 #      e.g. "-channel=6 -ConfigSet=5 -power=10"), PHY_ARGS (e.g. -defmodem=BLE_simple, needed for
@@ -76,8 +76,8 @@ setup)
 	;;
 build)
 	patch_hw
-	"${DOCKER[@]}" -v "$OUT/hw":/ws/modules/bsim_hw_models/nrf_hw_models slime-bsim:ready bash -c '
-		cd /ws && west build -p always -b nrf52_bsim -d /out/build /app > /out/build.log 2>&1 || { tail -20 /out/build.log; exit 1; }'
+	"${DOCKER[@]}" -v "$OUT/hw":/ws/modules/bsim_hw_models/nrf_hw_models -e WEST_ARGS="${WEST_ARGS:-}" slime-bsim:ready bash -c '
+		cd /ws && west build -p always -b nrf52_bsim -d /out/build /app $WEST_ARGS > /out/build.log 2>&1 || { tail -20 /out/build.log; exit 1; }'
 	echo "built $OUT/build/app/zephyr/zephyr.exe"
 	;;
 build-rx)
@@ -85,7 +85,7 @@ build-rx)
 	patch_hw
 	"${DOCKER[@]}" -v "$RX":/rxapp -v "$OUT/hw":/ws/modules/bsim_hw_models/nrf_hw_models slime-bsim:ready bash -c '
 		cd /ws && west build -p always -b nrf52_bsim -d /out/rx /rxapp > /out/rx.log 2>&1 || { tail -20 /out/rx.log; exit 1; }'
-	echo "built $OUT/rx/app/zephyr/zephyr.exe"
+	echo "built $OUT/rx/rxapp/zephyr/zephyr.exe"
 	;;
 fullstack)
 	[ $# -ge 3 ] || { echo "usage: $0 fullstack <seconds> <rec.csv>..."; exit 2; }
@@ -99,9 +99,12 @@ fullstack)
 	"${DOCKER[@]}" "${MOUNTS[@]}" -e STAGGER_US="${STAGGER_US:-0}" -e WLAN="${WLAN:-}" -e PHY_ARGS="${PHY_ARGS:-}" \
 		slime-bsim:ready bash -c '
 		cd /opt/bsim/bin; SECS=$1; shift; N=$(( $# + 1 )); FS=/out/fs
+		for x in /out/rx/rxapp/zephyr/zephyr.exe /out/build/app/zephyr/zephyr.exe; do
+			[ -x $x ] || { echo "missing $x (run build / build-rx)"; exit 1; }  # the phy would wait forever
+		done
 		if [ -n "$WLAN" ]; then N=$((N + 1)); ./bs_device_2G4_WLAN_actmod -s=fs -d=$((N - 1)) -rs=7 $WLAN > $FS/wlan.log 2>&1 & fi
 		./bs_2G4_phy_v1 -s=fs -D=$N -sim_length=${SECS}e6 -dump $PHY_ARGS > $FS/phy.log 2>&1 &
-		SLIME_SIM_OUT=$FS/rx_hid.csv /out/rx/app/zephyr/zephyr.exe -s=fs -d=0 -rs=100 > $FS/rx.log 2>&1 &
+		SLIME_SIM_OUT=$FS/rx_hid.csv /out/rx/rxapp/zephyr/zephyr.exe -s=fs -d=0 -rs=100 > $FS/rx.log 2>&1 &
 		i=1
 		for rec in "$@"; do
 			OFF=$(( (i - 1) * STAGGER_US )); echo $OFF > $FS/trk$i.offset

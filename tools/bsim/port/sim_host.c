@@ -109,6 +109,13 @@ int slime_sim_magcal_requested(void)
 	return !(v && v[0] == '0');
 }
 
+/* Firmware runs in zero simulated time; charge this per FIFO sample read (fusion cost). */
+int slime_sim_cpu_us_per_sample(void)
+{
+	const char *v = getenv("SLIME_SIM_CPU_US");
+	return v ? atoi(v) : 50;
+}
+
 void slime_sim_log_quat(uint64_t t_us, const float q[4])
 {
 	if (!out) {
