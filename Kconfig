@@ -454,7 +454,7 @@ config SENSOR_UPDATE_TIME_LOW_NOISE_MS
 
 config SENSOR_SLOT_SYNC
     bool "Run the sensor loop just before the tracker's TDMA slot"
-    default n
+    default y
     depends on CONNECTION_TDMA
     help
         While TDMA is synced, wake the sensor loop just before the own slot
