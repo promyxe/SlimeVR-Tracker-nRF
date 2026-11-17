@@ -25,6 +25,12 @@
 #ifndef MOT_DEADBAND
 #define MOT_DEADBAND 0.03 /* ignore smaller offsets (relative) */
 #endif
+#ifndef MOT_STEP_TAU_S
+#define MOT_STEP_TAU_S 1.0f /* norm error averaging for removal detection */
+#endif
+#ifndef MOT_STEP_DEV
+#define MOT_STEP_DEV 0.025f /* rms relative norm error with the offset applied */
+#endif
 
 void mag_offset_track_reset(struct mag_offset_track *t)
 {
@@ -103,6 +109,7 @@ static void fit(struct mag_offset_track *t)
 	if (t->cv > MOT_MAX_CV_PCT || off > MOT_MAX_OFFSET * sqrt(r2)) {
 		return;
 	}
+	t->ref_norm = (float)sqrt(r2);
 	/* Accumulators hold uncorrected samples: x is the absolute offset. */
 	bool significant = off > MOT_DEADBAND * sqrt(r2);
 	for (int i = 0; i < 3; i++) {
@@ -110,8 +117,33 @@ static void fit(struct mag_offset_track *t)
 	}
 }
 
+/* Magnet removed: the raw field matches the last fit's strength much better than
+ * the corrected one. Drop the offset at once and refit from fresh data only. */
+static void detect_removal(struct mag_offset_track *t, const float m[3], float dt)
+{
+	bool offset_on = t->offset[0] != 0 || t->offset[1] != 0 || t->offset[2] != 0;
+	if (!offset_on || !(t->ref_norm > 0) || !(dt > 0)) {
+		t->dev_off = t->dev_raw = 0;
+		return;
+	}
+	float raw = sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) / t->ref_norm - 1.0f;
+	float c[3] = {m[0] - t->offset[0], m[1] - t->offset[1], m[2] - t->offset[2]};
+	float cor = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / t->ref_norm - 1.0f;
+	float a = fminf(dt / MOT_STEP_TAU_S, 1.0f);
+	t->dev_raw += a * (raw * raw - t->dev_raw);
+	t->dev_off += a * (cor * cor - t->dev_off);
+	if (t->dev_off > MOT_STEP_DEV * MOT_STEP_DEV && t->dev_raw < t->dev_off / 4) {
+		memset(t->offset, 0, sizeof(t->offset));
+		memset(t->ata, 0, sizeof(t->ata));
+		memset(t->atb, 0, sizeof(t->atb));
+		t->tt = t->weight = 0;
+		t->since_fit = 0;
+	}
+}
+
 void mag_offset_track_apply(struct mag_offset_track *t, float m[3], float dt)
 {
+	detect_removal(t, m, dt);
 	double lambda = (dt > 0 && dt < 1) ? exp(-dt / MOT_TAU_S) : 1.0;
 	double row[4] = {2.0 * m[0], 2.0 * m[1], 2.0 * m[2], 1.0};
 	double target = (double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2];

@@ -17,6 +17,9 @@ struct mag_offset_track {
 	float offset[3];  /* currently applied offset (calibrated units) */
 	float cv;         /* last fit's field-strength variation, % */
 	uint32_t since_fit;
+	float ref_norm;   /* field strength of the last consistent fit, 0 = unknown */
+	float dev_off;    /* ~1 s mean squared relative norm error, offset applied */
+	float dev_raw;    /* same without the offset */
 };
 
 /* Sphere fit normal equations |m|^2 = 2 c.m + k: solve for x = (cx, cy, cz, k).
