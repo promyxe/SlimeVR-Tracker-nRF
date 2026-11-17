@@ -123,7 +123,43 @@ static bool sphere_solve(float center[3])
 	}
 	return true;
 }
+
+static float outlier_ref[4]; /* center xyz, radius; radius 0 = not fitted yet */
+static uint32_t outlier_ref_count;
 #endif
+static uint32_t mag_cal_rejected;
+
+/* True for a sample disturbed by a nearby magnet (see MAG_CAL_MAX_RAW_NORM_G). */
+static bool mag_cal_outlier(const float m[3])
+{
+	if (magneto_norm_sq(m) > MAG_CAL_MAX_RAW_NORM_G * MAG_CAL_MAX_RAW_NORM_G) {
+		return true;
+	}
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+	uint32_t n = (uint32_t)sample_count;
+	if (n < MAG_CAL_OUTLIER_MIN_SAMPLES) {
+		return false;
+	}
+	if (n != outlier_ref_count && (n % 16 == 0 || !(outlier_ref[3] > 0))) {
+		double x[4];
+		outlier_ref_count = n;
+		if (mag_sphere_solve(sphere_ata, sphere_atb, x)) {
+			double r2 = x[3] + x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+			outlier_ref[3] = r2 > 0 ? (float)sqrt(r2) : 0;
+			for (int i = 0; i < 3; i++) {
+				outlier_ref[i] = (float)x[i];
+			}
+		}
+	}
+	if (!(outlier_ref[3] > 0)) {
+		return false;
+	}
+	float d[3] = {m[0] - outlier_ref[0], m[1] - outlier_ref[1], m[2] - outlier_ref[2]};
+	return fabsf(sqrtf(magneto_norm_sq(d)) / outlier_ref[3] - 1.0f) > MAG_CAL_OUTLIER_FRAC;
+#else
+	return false;
+#endif
+}
 
 /* Field strength variation (%) of the reservoir under m_inv. */
 static float mag_cal_norm_cv(const float m_inv[4][3])
@@ -314,7 +350,10 @@ void magneto_reset(void)
 #if CONFIG_SENSOR_MAG_CAL_SPHERE
 	memset(sphere_ata, 0, sizeof(sphere_ata));
 	memset(sphere_atb, 0, sizeof(sphere_atb));
+	memset(outlier_ref, 0, sizeof(outlier_ref));
+	outlier_ref_count = 0;
 #endif
+	mag_cal_rejected = 0;
 	mag_cal_last_status_log = 0;
 	mag_cal_coverage = 0;
 #endif
@@ -622,6 +661,10 @@ static void sensor_sample_mag_magneto_sample(const float m[3], float m_inv[4][3]
 	if (magneto_norm_sq(raw_mag) < 1e-8f) {
 		return;
 	}
+	if (mag_cal_outlier(raw_mag)) {
+		mag_cal_rejected++; /* before any estimator sees it */
+		return;
+	}
 	magneto_center_update(&manual_center_estimator, raw_mag);
 	if (!magneto_centered_direction(&manual_center_estimator, raw_mag, cur_mag_dir)) {
 		return;
@@ -683,8 +726,9 @@ static void sensor_sample_mag_magneto_sample(const float m[3], float m_inv[4][3]
 		float min_range = magneto_min_dir_range();
 		float raw_range = magneto_center_min_range(&manual_center_estimator);
 		LOG_INF(
-			"Mag cal check: %d samples, min_range=%.2f (need %.2f), raw_range=%.3f (need %.3f)",
+			"Mag cal check: %d samples (%u disturbed ignored), min_range=%.2f (need %.2f), raw_range=%.3f (need %.3f)",
 			(int)sample_count,
+			mag_cal_rejected,
 			(double)min_range,
 			(double)MAG_CAL_MIN_DIR_RANGE,
 			(double)raw_range,
