@@ -61,11 +61,13 @@ DESK = ((0.5, 3.5, 0.7), (0.0, 0.0, 0.03))
 #   mains:  50 Hz field from a cable/power strip, amplitude at 0.3 m, ~1/r falloff. Mag sampling at
 #           50 Hz aliases it into a slow beat (mains vs crystal mismatch 0.05%: 40 s period).
 #   pocket: body-fixed magnet (phone/keys) appearing and disappearing for 1-3 min at a time.
+#   magnet: body-fixed magnet always present (strap clip, mount), far above factory hard iron.
 #   mag_tempco: QMC6309 offset drift per degree C during warm-up (body-fixed, like hard iron).
 #   dwell:  stay near (x, y) for the whole run (sitting at the desk).
 SCENARIOS.update({
     "mains": dict(height=0.5, dipoles=[DESK], mains=dict(at=(0.7, 3.3, 0.3), amp_g=0.005)),
     "pocket": dict(height=0.6, dipoles=[], pocket_g=0.03),
+    "magnet": dict(height=0.6, dipoles=[], magnet_g=0.1),
     "warmup": dict(height=1.0, dipoles=[], mag_tempco_g=0.0005),
     "desk": dict(height=0.5, dipoles=[DESK], dwell=(0.9, 3.0), mains=dict(at=(0.7, 3.3, 0.3), amp_g=0.005)),
 })
@@ -194,6 +196,8 @@ def simulate(seed, minutes, scenario, path):
             on[k:k + dur] = state
             state, k = not state, k + dur
         body_extra += on[:, None] * sc["pocket_g"] * np.array([0.7, -0.5, 0.5])
+    if "magnet_g" in sc:
+        body_extra += sc["magnet_g"] * np.array([-0.4, 0.8, 0.45])
     if "mag_tempco_g" in sc:
         body_extra += (temp[idx] - 25)[:, None] * sc["mag_tempco_g"] * rng.normal(0, 1, 3)
     mag[idx] = b_body @ soft.T + hard + body_extra + rng.normal(0, s["mag_noise_g"], (len(idx), 3))
@@ -248,7 +252,7 @@ def main():
     ap.add_argument("--param", action="append", default=[], help="VQF parameter override name=value")
     ap.add_argument("--sensor", action="append", default=[], help="SENSOR model override name=value")
     ap.add_argument("--mag-hz", type=float, default=MAG_HZ, help="mag sample rate (firmware default 50)")
-    ap.add_argument("--tool-arg", action="append", default=[], help="extra vqf_replay argument, e.g. --no-mag")
+    ap.add_argument("--tool-arg", action="append", default=[], help="extra vqf_replay argument, e.g. --mag-track")
     args = ap.parse_args()
     MAG_HZ = args.mag_hz
     for kv in args.sensor:

@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "vqf.h"
+#include "../../src/sensor/calibration/mag_offset_track.h"
 
 #define DEG2RAD 0.017453292519943295
 #define RAD2DEG 57.29577951308232
@@ -192,7 +193,7 @@ int main(int argc, char **argv)
 {
 	firmware_params();
 	const char *csv_path = NULL, *meta_path = NULL, *out_path = NULL;
-	bool use_mag = true;
+	bool use_mag = true, use_mag_track = false;
 	double window_s = 2.0, skip_s = 0.0;
 
 	for (int i = 1; i < argc; i++) {
@@ -209,6 +210,8 @@ int main(int argc, char **argv)
 			}
 		} else if (!strcmp(argv[i], "--no-mag")) {
 			use_mag = false;
+		} else if (!strcmp(argv[i], "--mag-track")) {
+			use_mag_track = true;
 		} else if (!strcmp(argv[i], "--skip") && i + 1 < argc) {
 			skip_s = atof(argv[++i]);
 		} else if (!strcmp(argv[i], "--window") && i + 1 < argc) {
@@ -268,6 +271,8 @@ int main(int argc, char **argv)
 	double *ring6 = calloc((size_t)win_n, sizeof(double));
 	double *ring9 = calloc((size_t)win_n, sizeof(double));
 	struct circ start6 = {0}, start9 = {0};
+	struct mag_offset_track mot;
+	mag_offset_track_reset(&mot);
 
 	while (fgets(line, sizeof(line), in)) {
 		double v[12];
@@ -301,6 +306,9 @@ int main(int argc, char **argv)
 				apply_bainv(m.mag_bainv, mg, mr);
 			} else {
 				for (int i = 0; i < 3; i++) mr[i] = (vqf_real_t)mg[i];
+			}
+			if (use_mag_track) {
+				mag_offset_track_apply(&mot, mr, (float)(1.0 / m.mag_hz));
 			}
 			updateMag(&params, &state, &coeffs, mr);
 			mag_n++;
@@ -354,6 +362,10 @@ int main(int argc, char **argv)
 	printf("rest_pct=%.1f\n", 100.0 * (double)rest_n / (double)n);
 	printf("yaw6_change_deg=%.2f\n", wrap(circ_mean(&end6) - circ_mean(&start6)) * RAD2DEG);
 	printf("yaw9_change_deg=%.2f\n", wrap(circ_mean(&end9) - circ_mean(&start9)) * RAD2DEG);
+	if (use_mag_track) {
+		printf("mag_track_offset=%.4f,%.4f,%.4f mag_track_cv=%.2f mag_track_weight=%.0f\n", mot.offset[0],
+		       mot.offset[1], mot.offset[2], mot.cv, mot.weight);
+	}
 	printf("bias_final_dps=%.4f,%.4f,%.4f\n", bias[0] * RAD2DEG, bias[1] * RAD2DEG, bias[2] * RAD2DEG);
 	free(ring6);
 	free(ring9);
