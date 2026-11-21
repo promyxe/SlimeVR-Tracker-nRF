@@ -27,6 +27,9 @@
 #include "sensor/calibration/online_mag.h"
 #endif
 #include "connection.h"
+#if defined(CONFIG_BOARD_NRF52_BSIM)
+#include "slime_sim.h"
+#endif
 #include "util.h"
 #include "esb.h"
 #include "network_ticks.h"
@@ -469,6 +472,9 @@ void connection_update_sensor_ids(int imu, int mag)
 
 void connection_update_sensor_data(float *q, float *a)
 {
+#if defined(CONFIG_BOARD_NRF52_BSIM)
+	slime_sim_log_quat(k_ticks_to_us_floor64(k_uptime_ticks()), q);
+#endif
 	// Reject NaN quaternions to prevent sending invalid data to server
 	if (isnan(q[0]) || isnan(q[1]) || isnan(q[2]) || isnan(q[3])) {
 		LOG_WRN("Rejected NaN quaternion");
@@ -1927,6 +1933,12 @@ static void connection_thread(void)
 #endif
 		) {
 			sensor_data_capture_t capture;
+#if CONFIG_SENSOR_SLOT_SYNC
+			/* late binding: a delayed slot still carries the newest sample */
+			if (quat_ready && !in_test_mode && tdma_is_enabled()) {
+				(void)tdma_wait_for_slot_open(32);
+			}
+#endif
 			sensor_data_snapshot_capture(&sensor_data_snapshot, &capture);
 			quat_ready = in_test_mode ? test_send_due : (capture.pending & SENSOR_STREAM_QA) != 0;
 #if CONFIG_SENSOR_USE_MAGNETOMETER

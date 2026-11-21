@@ -1,0 +1,52 @@
+/* Simulated tracker (BabbleSim, tools/bsim): emulated ICM-45686 on SPI, QMC6309 on I2C. */
+/ {
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+	};
+
+	spi_emul0: spi@100 {
+		compatible = "zephyr,spi-emul-controller";
+		reg = <0x100 4>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		imu_spi: imu@0 {
+			compatible = "slimevr,icm45686-emul";
+			reg = <0>;
+			spi-max-frequency = <24000000>;
+		};
+	};
+
+	i2c_emul0: i2c@200 {
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x200 4>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clock-frequency = <400000>;
+		status = "okay";
+
+		mag: mag@7c {
+			compatible = "slimevr,qmc6309-emul";
+			reg = <0x7c>;
+		};
+	};
+};
+
+&flash0 {
+	/delete-node/ partitions;
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		slot0_partition: partition@1000 {
+			label = "application";
+			reg = <0x00001000 0x00070000>;
+		};
+		storage_partition: partition@71000 {
+			label = "storage";
+			reg = <0x00071000 0x00006000>;
+		};
+	};
+};

@@ -34,6 +34,8 @@ static inline uint16_t icm426xx_fifo_read(
 			ICM_HIRES_PACKET_SIZE);
 		if (err) {
 			*temperature_valid = false;
+			/* Failed burst: the batch is gone, so report the gap. */
+			sensor_gyro_report_discontinuity();
 			return total_packets;
 		}
 		if (!icm426xx_hires_temperature(data, packet_count, temperature)) {

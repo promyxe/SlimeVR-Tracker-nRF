@@ -30,7 +30,15 @@
 #include "util.h"
 #include "connection/connection.h"
 #include "connection/tracker_events.h"
+#if CONFIG_SENSOR_SLOT_SYNC
+#include "connection/tdma.h"
+#endif
 #include "calibration/calibration.h"
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+#include "calibration/mag_offset_track.h"
+/* Reset with the mag reference, i.e. on calibration change. */
+static struct mag_offset_track mag_offset_tracker;
+#endif
 #include "calibration/imu_calibration.h"
 #include "calibration/cal_sample.h"
 #if CONFIG_SENSOR_USE_MAGNETOMETER
@@ -2466,6 +2474,9 @@ static float mag_feed_hz; /* last STATUS_INTERVAL window */
 void sensor_mag_ref_reset(void)
 {
 	sensor_fusion_reset_mag_ref();
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+	mag_offset_track_reset(&mag_offset_tracker);
+#endif
 }
 
 /* q maps fusion body to earth. Earth up in body is row 3 of R(q).
@@ -3208,6 +3219,9 @@ static void sensor_loop_process_mag(sensor_loop_frame_t *frame)
 			memcpy(frame->raw_m, uncalibrated_m, sizeof(uncalibrated_m));
 			mag_calibrated = false;
 		} else {
+#if CONFIG_SENSOR_MAG_OFFSET_TRACK
+			mag_offset_track_apply(&mag_offset_tracker, frame->raw_m, mag_actual_time);
+#endif
 			// Track calibrated mag norm for online quality assessment
 			// Only track when fusion reports no magnetic disturbance — including
 			// disturbed samples inflates norm CV and prevents online cal from stabilizing
@@ -3512,6 +3526,35 @@ static void sensor_loop_publish(sensor_loop_frame_t *frame)
 #endif
 }
 
+#if CONFIG_SENSOR_SLOT_SYNC
+static uint32_t slot_sync_proc_us; /* decaying max of acquire..publish time */
+
+/* Wake just before the own TDMA slot; false = not synced, use the FIFO interrupt. */
+static bool sensor_slot_sync_wait(void)
+{
+	uint32_t period_us = sensor_update_time_ms > CONFIG_SENSOR_UPDATE_TIME_LOW_NOISE_MS
+		? (uint32_t)sensor_update_time_ms * 1000U : CONFIG_SENSOR_SLOT_SYNC_MIN_PERIOD_US;
+	int64_t wake;
+	if (atomic_get(&main_suspended)
+	    || !tdma_next_slot_wake(slot_sync_proc_us + CONFIG_SENSOR_SLOT_SYNC_MARGIN_US, period_us,
+				    2U * MAX(period_us, (uint32_t)sensor_update_time_ms * 1000U), &wake)) {
+		return false;
+	}
+	int64_t wait_begin_ticks = k_uptime_ticks();
+	k_sleep(K_TIMEOUT_ABS_TICKS(wake));
+#if IMU_INT_EXISTS
+	k_sem_reset(&sensor_int_sem); /* not the trigger here */
+#endif
+	sensor_window_wait_us += k_ticks_to_us_near64(k_uptime_ticks() - wait_begin_ticks);
+	return true;
+}
+#else
+static inline bool sensor_slot_sync_wait(void)
+{
+	return false;
+}
+#endif
+
 static void sensor_loop_wait(int64_t time_begin)
 {
 	/* Feed watchdog at end of each loop iteration */
@@ -3630,6 +3673,7 @@ static void sensor_loop_wait(int64_t time_begin)
 #endif
 	}
 
+	if (!sensor_slot_sync_wait()) {
 #if IMU_INT_EXISTS
 	int64_t wait_begin_ticks = k_uptime_ticks();
 	if (k_sem_take(&sensor_int_sem, K_NO_WAIT) == 0) {
@@ -3652,6 +3696,7 @@ static void sensor_loop_wait(int64_t time_begin)
 		k_msleep(sensor_update_time_ms - time_delta);
 	}
 #endif
+	}
 
 	if (atomic_get(&main_suspended)) {
 		if (sensor_fusion->take_rest_observation) {
@@ -3779,6 +3824,9 @@ static void sensor_loop(void)
 				sensor_loop_check_packets(&frame, time_begin);
 				sensor_loop_publish(&frame);
 				uint64_t proc_us = k_ticks_to_us_near64(k_uptime_ticks() - proc_begin_ticks);
+#if CONFIG_SENSOR_SLOT_SYNC
+				slot_sync_proc_us = MAX((uint32_t)proc_us, slot_sync_proc_us - slot_sync_proc_us / 64U);
+#endif
 				sensor_window_proc_us += proc_us;
 				if (proc_us > sensor_window_proc_max_us) {
 					sensor_window_proc_max_us = proc_us;

@@ -34,6 +34,15 @@
 #define MAG_CAL_MIN_DIR_RANGE 0.5f
 #define MAG_CAL_MIN_RAW_AXIS_RANGE 0.5f
 #define MAG_CAL_MAX_AXIS_GAIN 8.0f
+/* Max field strength variation (%) of an accepted fit; higher means the field
+ * was not uniform during calibration (desk, cables, magnets). */
+#define MAG_CAL_MAX_NORM_CV_PCT 3.0f
+/* Manual cal ignores disturbed samples (a magnet passing by would poison the fit for good):
+ * raw strength above earth (<= 0.65 G) + chip offset (<= 1 G), or a strength off the running
+ * sphere fit by more than MAG_CAL_OUTLIER_FRAC once MAG_CAL_OUTLIER_MIN_SAMPLES are in. */
+#define MAG_CAL_MAX_RAW_NORM_G 2.5f
+#define MAG_CAL_OUTLIER_FRAC 0.10f
+#define MAG_CAL_OUTLIER_MIN_SAMPLES 48
 
 typedef struct {
 	float min[3];

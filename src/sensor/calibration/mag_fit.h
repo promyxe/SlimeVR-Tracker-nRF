@@ -30,6 +30,12 @@ extern union mag_cal_workspace mag_cal_workspace;
  * bootstrap with previous=NULL and field_norm=0. Otherwise field_norm is the
  * previous model's positive target radius; its matrix is rescaled before fitting.
  * Only the calibration thread may call this function. */
+/* Hard-iron-only sphere fit, same output convention as magneto_robust_fit.
+ * Errors: -ENODATA < 48 samples, -ERANGE < 4 octants, -EBADMSG variation >
+ * max_cv_pct, -EDOM singular. */
+int magneto_sphere_fit(unsigned slots, mag_fit_read_fn read_sample, mag_fit_poll_fn poll, void *ctx,
+		       float max_cv_pct, float output[4][3], struct mag_fit_result *result);
+
 int magneto_robust_fit(
 	unsigned slots,
 	mag_fit_read_fn read_sample,

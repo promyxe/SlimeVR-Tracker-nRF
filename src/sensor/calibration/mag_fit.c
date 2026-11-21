@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "mag_fit.h"
 #include "sensor/magneto/magneto1_4.h"
+#include "mag_offset_track.h"
 #include <errno.h>
 #include <float.h>
 #include <math.h>
@@ -495,5 +496,83 @@ int magneto_robust_fit(
 	}
 	memcpy(output, model, sizeof(model));
 	*result = (struct mag_fit_result){h, condition, rms};
+	return 0;
+}
+
+int magneto_sphere_fit(unsigned slots, mag_fit_read_fn read, mag_fit_poll_fn poll, void *ctx, float max_cv_pct,
+		       float output[4][3], struct mag_fit_result *result)
+{
+	double ata[4][4] = {0}, atb[4] = {0};
+	unsigned count = 0;
+	for (unsigned i = 0; i < slots; i++) {
+		if (!polling(poll, ctx, i)) {
+			return -ECANCELED;
+		}
+		float m[3];
+		if (!read(ctx, i, m)) {
+			continue;
+		}
+		if (!finite3(m)) {
+			return -EDOM;
+		}
+		double row[4] = {2.0 * m[0], 2.0 * m[1], 2.0 * m[2], 1.0};
+		double t = (double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2];
+		for (int r = 0; r < 4; r++) {
+			for (int c = 0; c < 4; c++) {
+				ata[r][c] += row[r] * row[c];
+			}
+			atb[r] += row[r] * t;
+		}
+		count++;
+	}
+	double x[4];
+	if (count < 48) {
+		return -ENODATA;
+	}
+	if (!mag_sphere_solve(ata, atb, x)) {
+		return -EDOM;
+	}
+	/* Second pass: octant coverage around the fitted centre and radius spread. */
+	unsigned octants = 0;
+	double sum = 0, sum_sq = 0;
+	for (unsigned i = 0; i < slots; i++) {
+		if (!polling(poll, ctx, i)) {
+			return -ECANCELED;
+		}
+		float m[3];
+		if (!read(ctx, i, m)) {
+			continue;
+		}
+		double d[3] = {m[0] - x[0], m[1] - x[1], m[2] - x[2]};
+		double r = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+		octants |= 1U << ((d[0] > 0) | (d[1] > 0) << 1 | (d[2] > 0) << 2);
+		sum += r;
+		sum_sq += r * r;
+	}
+	double mean = sum / count;
+	double cv = 100.0 * sqrt(fmax(sum_sq / count - mean * mean, 0.0)) / mean;
+	unsigned covered = 0;
+	for (unsigned o = 0; o < 8; o++) {
+		covered += (octants >> o) & 1U;
+	}
+	if (!(mean > 0)) {
+		return -EDOM;
+	}
+	if (covered < 4) {
+		return -ERANGE;
+	}
+	if (!(cv <= max_cv_pct)) {
+		return -EBADMSG;
+	}
+	float scale = (float)(0.5 / mean);
+	for (int i = 0; i < 3; i++) {
+		output[0][i] = (float)x[i];
+		for (int j = 0; j < 3; j++) {
+			output[1 + i][j] = i == j ? scale : 0.0f;
+		}
+	}
+	result->field_norm = 0.5f;
+	result->condition = 1.0f;
+	result->rms = (float)(0.5 * cv / 100.0);
 	return 0;
 }

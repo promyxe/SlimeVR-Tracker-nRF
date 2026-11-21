@@ -452,6 +452,28 @@ config SENSOR_UPDATE_TIME_LOW_NOISE_MS
         Lower values raise the loop/packet rate (and ESB TPS) at the cost of
         more I2C/SPI reads and CPU time. 6 ms matches the historic default.
 
+config SENSOR_SLOT_SYNC
+    bool "Run the sensor loop just before the tracker's TDMA slot"
+    default y
+    depends on CONNECTION_TDMA
+    help
+        While TDMA is synced, wake the sensor loop just before the own slot
+        (measured processing time + margin) instead of on the FIFO interrupt:
+        fresh sample in every packet, lower and constant latency.
+
+config SENSOR_SLOT_SYNC_MARGIN_US
+    int "Slot sync: margin added to the measured processing time (us)"
+    default 300
+    depends on SENSOR_SLOT_SYNC
+
+config SENSOR_SLOT_SYNC_MIN_PERIOD_US
+    int "Slot sync: minimum sensor loop period (us)"
+    default 4000
+    range 1000 20000
+    depends on SENSOR_SLOT_SYNC
+    help
+        Own slots closer than this are skipped (short frames, few trackers).
+
 config SENSOR_STARTUP_DISCARD_MS
     int "Startup IMU samples to discard (ms)"
     default 20
@@ -471,6 +493,23 @@ config SENSOR_USE_MAGNETOMETER
         and manual and online magnetic calibration. Disabling this overrides
         magnetometer driver selections without changing saved calibration.
         The shared accelerometer calibration solver remains available.
+
+config SENSOR_MAG_CAL_SPHERE
+    bool "Mag calibration (manual and online): sphere fit (hard iron only)"
+    default y
+    depends on SENSOR_USE_MAGNETOMETER
+    help
+        Fit hard iron only (sphere) instead of a full ellipsoid for manual and
+        online mag calibration. Much better conditioned with partial rotation.
+        Disable if the board has strong soft-iron distortion.
+
+config SENSOR_MAG_OFFSET_TRACK
+    bool "Track residual magnetometer offset (body-fixed magnets)"
+    default y
+    depends on SENSOR_USE_MAGNETOMETER
+    help
+        Subtract a residual hard-iron offset (e.g. phone/keys next to the
+        tracker) found by a rolling 20 s sphere fit.
 
 config SENSOR_MAG_ODR
     int "Magnetometer ODR (Hz)"

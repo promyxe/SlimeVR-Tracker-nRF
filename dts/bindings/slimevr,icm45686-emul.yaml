@@ -1,0 +1,3 @@
+description: ICM-45686 register emulator for nrf52_bsim (tools/bsim)
+compatible: "slimevr,icm45686-emul"
+include: spi-device.yaml

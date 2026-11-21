@@ -17,6 +17,11 @@
 
 #include "build_defines.h"
 
+#if defined(CONFIG_ARCH_POSIX)
+/* nrf52_bsim: no fixed SRAM address. */
+static struct retained_data retained_sim;
+struct retained_data *const retained = &retained_sim;
+#else
 #if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(retainedmemdevice))
 #define MEMORY_REGION DT_PARENT(DT_ALIAS(retainedmemdevice))
 #else
@@ -24,6 +29,7 @@
 #endif
 
 struct retained_data *const retained = (struct retained_data *)DT_REG_ADDR(MEMORY_REGION);
+#endif
 
 #define RETAINED_CRC_OFFSET offsetof(struct retained_data, crc)
 #define RETAINED_CHECKED_SIZE (RETAINED_CRC_OFFSET + sizeof(retained->crc))

@@ -204,8 +204,8 @@ static int sys_interface_action(enum pm_device_action action)
 			continue;
 		}
 		int err = pm_device_action_run(buses[i], action);
-		/* Repeated resume/suspend is part of the interface lifecycle. */
-		if (err && err != -EALREADY) {
+		/* Repeated resume/suspend is expected; -ENOSYS: bus without PM. */
+		if (err && err != -EALREADY && err != -ENOSYS) {
 			LOG_ERR("Bus PM action %d failed: %d", action, err);
 			if (!first_err) {
 				first_err = err;

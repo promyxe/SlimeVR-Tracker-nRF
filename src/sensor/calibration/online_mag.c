@@ -26,7 +26,19 @@ LOG_MODULE_REGISTER(cal_online_mag, LOG_LEVEL_INF);
 #define ONLINE_FIT_TIMEOUT_MS 5000U
 #define ONLINE_VALIDATE_MS 3000U
 #define ONLINE_PROBATION_MS 10000U
+/* Normal body motion rarely reaches the full validation coverage within 45 s
+ * (simulation: 2% of windows); relaxed values pass ~70% over 120 s. */
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+#define ONLINE_MIN_SAMPLES 96
+#define ONLINE_EPISODE_TIMEOUT_MS 120000U
+#define ONLINE_MIN_CELLS 8
+#define ONLINE_MIN_PAIRS 1
+#else
+#define ONLINE_MIN_SAMPLES MAG_CAL_MIN_SAMPLES
 #define ONLINE_EPISODE_TIMEOUT_MS 45000U
+#define ONLINE_MIN_CELLS 10
+#define ONLINE_MIN_PAIRS 2
+#endif
 #define ELAPSED(now, then) ((uint32_t)((now) - (then)))
 
 struct online_sample {
@@ -748,7 +760,7 @@ static bool metrics_pass(bool trusted, bool allow_unchanged, struct evidence *e)
 	/* Partial radial coverage still needs both signs of two dominant axes.
 	 * Reference dip deliberately retains the broader coverage above. */
 	unsigned pairs = (poles & (poles >> 1)) & 0x15U;
-	if (cells < 10 || __builtin_popcount(pairs) < 2 || e->diagnostics.radial_count < 96) {
+	if (cells < ONLINE_MIN_CELLS || __builtin_popcount(pairs) < ONLINE_MIN_PAIRS || e->diagnostics.radial_count < 96) {
 		e->diagnostics.rejection = ONLINE_MAG_REJECT_COVERAGE;
 		return false;
 	}
@@ -1195,10 +1207,25 @@ bool sensor_calibration_online_mag_check(void)
 		return confirm();
 	}
 	if (!online.enabled || online.suspended || online.fitter || online.phase != TRAINING
-		|| online.served != online.generation || online.recent_count < MAG_CAL_MIN_SAMPLES
+		|| online.served != online.generation || online.recent_count < ONLINE_MIN_SAMPLES
 		|| online.admitted_since_fit < 32 || ELAPSED(now, online.last_check) < ONLINE_CHECK_MS
 		|| (magneto_progress & 0x80)) {
+		static uint32_t last_gate_log;
+		struct {
+			bool enabled, suspended, fitter;
+			int phase;
+			uint32_t served, generation;
+			unsigned recent, admitted;
+		} g = {online.enabled, online.suspended, online.fitter, online.phase, online.served, online.generation,
+		       online.recent_count, online.admitted_since_fit};
 		k_spin_unlock(&online_lock, key);
+		/* Debug getter takes online_lock. */
+		if (ELAPSED(now, last_gate_log) >= 10000U && sensor_calibration_get_online_mag_debug()) {
+			last_gate_log = now;
+			LOG_INF("Online mag waiting: enabled=%d suspended=%d fitter=%d phase=%d served/gen=%u/%u "
+				"recent=%u (need %d) admitted=%u (need 32)", g.enabled, g.suspended, g.fitter, g.phase,
+				g.served, g.generation, g.recent, ONLINE_MIN_SAMPLES, g.admitted);
+		}
 		return false;
 	}
 	online.last_check = now;
@@ -1252,6 +1279,13 @@ bool sensor_calibration_online_mag_check(void)
 				field = sum / n;
 			}
 		}
+#if CONFIG_SENSOR_MAG_CAL_SPHERE
+		if (fit_poll(&ctx)) {
+			error = magneto_sphere_fit(ONLINE_SLOTS, fit_read, fit_poll, &ctx, MAG_CAL_MAX_NORM_CV_PCT, output,
+						   &result);
+		}
+		trusted = false; /* no ellipsoid retry below */
+#else
 		if (fit_poll(&ctx)) {
 			error = magneto_robust_fit(
 				ONLINE_SLOTS,
@@ -1264,6 +1298,7 @@ bool sensor_calibration_online_mag_check(void)
 				&result
 			);
 		}
+#endif
 		if (error && trusted && fit_poll(&ctx)) {
 			key = k_spin_lock(&online_lock);
 			if (online.generation == ctx.generation) {

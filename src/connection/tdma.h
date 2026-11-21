@@ -86,6 +86,13 @@ void tdma_init(uint8_t tracker_id);
  */
 bool tdma_wait_for_slot(uint8_t payload_length);
 
+/** Like tdma_wait_for_slot() but does not claim the frame (capture data, then send). */
+bool tdma_wait_for_slot_open(uint8_t payload_length);
+
+/** Absolute kernel tick lead_us before the next usable own slot (>= min_period_us after
+ *  the last one). False if TDMA is off/unsynced or the wake is > max_delay_us away. */
+bool tdma_next_slot_wake(uint32_t lead_us, uint32_t min_period_us, uint32_t max_delay_us, int64_t *wake_ticks);
+
 /** Result of attempting the current deterministic guarded PING window. */
 enum tdma_ping_admission {
 	TDMA_PING_UNAVAILABLE,
